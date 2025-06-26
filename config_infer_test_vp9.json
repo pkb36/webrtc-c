@@ -1,0 +1,28 @@
+{
+    "camera_id":"ITC100A-23081010", 
+    "comm_socket_port" : 6000,
+
+    "max_stream_cnt" : 10,
+    "stream_base_port" : 5000,
+    "device_cnt" : 1,
+    
+    "snapshot_path" : "/home/gnossienne/webrtc_service",
+    "video0":{"src":"multifilesrc location=CAM2_0000000.webm loop=true ! decodebin  ! queue ! tee name=video_src_tee0 ", 
+                "infer" : "video_src_tee0. ! queue ! nvvideoconvert ! m.sink_0 nvstreammux name=m batch-size=1 width=640 height=480 live-source=1 ! nvinfer config-file-path=Thermal_yoloV7.txt name=nvinfer_1 ! nvdsosd name=nvosd_1 ! nvvideoconvert  ! ",
+                "enc":"video/x-raw, format=I420 ! videoconvert ! queue ! jpegenc ! rtpjpegpay pt=26 !",
+                "enc2":"video_src_tee0. ! queue ! videoscale ! videorate ! video/x-raw,width=320,height=240,framerate=5/1 ! vp8enc keyframe-max-dist=5 target-bitrate=10000 ! rtpvp8pay ! ",
+				"snapshot":"video_src_tee0. ! queue ! videoscale ! videorate ! video/x-raw,width=320,height=240,framerate=1/1 ! jpegenc ! multifilesink post-messages=true" },
+    
+    "status_timer_interval": 0, 
+    "tty":{"name":"/dev/ttyUSB0", "baudrate":38400},		
+    "server_ip": "ws://121.67.120.203:5000",
+
+    "event_user_id" : "01027061463",
+    "event_user_pw" : "12341234",
+    "event_server_ip" : "52.194.238.184",
+    "device_setting_path" : "/home/gnossienne/webrtc_service/webrtc/device_setting.json",
+    
+    "record_path" : "/home/gnossienne/data",
+    "record_duration" : 1   
+}
+

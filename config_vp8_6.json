@@ -1,0 +1,16 @@
+{
+    "camera_id":"1003", 
+    "comm_socket_port" : 6000,
+
+    "max_stream_cnt" : 5,
+    "stream_base_port" : 5000,
+    "device_cnt" : 2,
+
+    "video0":{"src":"v4l2src device=/dev/video1 ! videoscale ! videorate ! video/x-raw,width=960,height=540,framerate=15/1 ! videoconvert ! queue  ",
+                "enc":"vp8enc deadline=1 keyframe-max-dist=60 target-bitrate = 800000 ! rtpvp8pay " },
+    "video1":{"src":"v4l2src device=/dev/video2 ! videoconvert ! queue  ",
+                "enc":"vp8enc deadline=1 keyframe-max-dist=60 target-bitrate = 100000 ! rtpvp8pay " },                
+    "tty":{"name":"/dev/ttyUSB0", "baudrate":38400},		
+    "server_ip": "ws://192.168.0.8:8443" 
+}
+

@@ -1,0 +1,17 @@
+{
+    "camera_id":"1003", 
+    "comm_socket_port" : 6000,
+
+    "max_stream_cnt" : 5,
+    "stream_base_port" : 5000,
+    "device_cnt" : 1,
+
+    "video0":{"src":"v4l2src device=/dev/video0 ! queue ! tee name=video_src_tee0  ",
+                "infer" : "video_src_tee0. ! queue ! nvvideoconvert !",
+                "enc":"nvv4l2vp9enc preset-level=FastPreset idrinterval=150 bitrate= 500000 ! rtpvp9pay ! " ,
+                "snapshot":"video_src_tee0. ! queue ! videoscale ! videorate ! video/x-raw,width=160,height=120,framerate=1/1 ! jpegenc ! multifilesink post-messages=true location=/home/nvidia/webrtc/cam0_snapshot.jpg " },
+    
+    "tty":{"name":"/dev/ttyUSB0", "baudrate":38400},		
+    "server_ip": "ws://121.67.120.203:8443" 
+}
+

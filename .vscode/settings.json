@@ -1,0 +1,15 @@
+{
+    "files.associations": {
+        "video_convert.h": "c",
+        "gstream_main.h": "c",
+        "json_utils.h": "c",
+        "nvds_process.h": "c",
+        "json-glib.h": "c",
+        "command_handler.h": "c",
+        "cstring": "c",
+        "system_error": "c",
+        "pthread.h": "c",
+        "time.h": "c",
+        "event_recorder.h": "c"
+    }
+}

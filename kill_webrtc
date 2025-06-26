@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# 종료할 프로세스 이름
+process_name="webrtc"
+
+# 프로세스를 찾고 PID 가져오기
+pid=$(pgrep "$process_name")
+
+# 프로세스가 실행 중인지 확인
+if [ -z "$pid" ]; then
+    echo "프로세스 '$process_name'를 찾을 수 없습니다."
+else
+    # 프로세스를 종료
+    kill -9 "$pid"
+    echo "프로세스 '$process_name' (PID: $pid)를 종료했습니다."
+fi

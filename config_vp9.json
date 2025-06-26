@@ -1,0 +1,16 @@
+{
+    "camera_id":"1003", 
+    "comm_socket_port" : 6000,
+
+    "max_stream_cnt" : 5,
+    "stream_base_port" : 5000,
+    "device_cnt" : 2,
+
+    "video0":{"src":"v4l2src device=/dev/video0 ! videoscale ! videorate ! video/x-raw,width=1280,height=720,framerate=15/1 ! queue ! videoconvert ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ",
+                "enc":"nvv4l2vp9enc preset-level=FastPreset idrinterval=150 bitrate= 500000 ! rtpvp9pay " },
+    "video1":{"src":"v4l2src device=/dev/video2 !  videorate !  video/x-raw,framerate=15/1  ! queue ! videoconvert ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ",
+                "enc":"nvv4l2vp9enc preset-level=FastPreset idrinterval=150 bitrate= 100000 ! rtpvp9pay " },
+
+    "tty":{"name":"/dev/ttyUSB0", "baudrate":38400},		
+    "server_ip": "ws://121.67.120.203:8443" 
+}

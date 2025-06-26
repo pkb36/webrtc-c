@@ -1,0 +1,37 @@
+{
+    "camera_id":"ITC100A-23082010", 
+    "comm_socket_port" : 6000,
+
+    "max_stream_cnt" : 10,
+    "stream_base_port" : 5000,
+    "device_cnt" : 2,
+    
+    "snapshot_path" : "/home/gnossienne/webrtc_service",
+    "video0":{"src":"videotestsrc pattern=smpte is-live=True ! video/x-raw,width=640,height=480,framerate=15/1 ! videoconvert ! queue ! tee name=video_src_tee0 ", 
+                "infer" :"video_src_tee0. ! queue ! ",
+                "enc":"vp8enc keyframe-max-dist=30 target-bitrate=15000 ! rtpvp8pay !",
+                "enc2":"video_src_tee0. ! queue ! videoscale ! videorate ! video/x-raw,width=320,height=240,framerate=5/1 ! vp8enc keyframe-max-dist=5 target-bitrate=10000 ! rtpvp8pay ! ",
+				"snapshot":"video_src_tee0. ! queue ! videoscale ! videorate ! video/x-raw,width=160,height=120,framerate=1/1 ! jpegenc ! multifilesink post-messages=true" },
+    "video1":{"src":"videotestsrc pattern=ball is-live=True ! video/x-raw,width=320,height=240,framerate=15/1 ! videoconvert ! queue ! tee name=video_src_tee1 ", 
+                "infer" :"video_src_tee1. ! queue ! ",
+                "enc":"vp8enc keyframe-max-dist=30 target-bitrate=15000 ! rtpvp8pay !",
+                "enc2":"video_src_tee0. ! queue ! videoscale ! videorate ! video/x-raw,width=320,height=240,framerate=5/1 ! vp8enc keyframe-max-dist=5 target-bitrate=10000 ! rtpvp8pay ! ",
+				"snapshot":"video_src_tee1. ! queue ! videoscale ! videorate ! video/x-raw,width=160,height=120,framerate=1/1 ! jpegenc ! multifilesink post-messages=true" },
+    
+    "status_timer_interval": 0, 
+    "tty":{"name":"/dev/ttyUSB0", "baudrate":38400},		
+    "server_ip": "ws://52.194.238.184" ,
+
+    "event_user_id" : "01027061463",
+    "event_user_pw" : "12341234",
+    "event_server_ip" : "52.194.238.184",
+    "device_setting_path" : "/home/gnossienne/webrtc_service/webrtc/device_setting.json",
+    
+    "record_path" : "/home/gnossienne/data",
+    "record_duration" : 1,   
+
+    "http_service_port": "12345",
+
+    "event_buf_time": 10
+
+}

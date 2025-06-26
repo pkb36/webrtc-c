@@ -1,0 +1,12 @@
+build/
+*.log
+*.h264
+*.idx
+__pycache__/
+*.zip
+*.o
+*.d
+*.make
+*.cmake
+build_old/
+*.jpg
