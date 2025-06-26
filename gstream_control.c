@@ -542,7 +542,8 @@ gboolean process_message_cmd(gJSONObj* jsonObj)
       glog_trace ("Can not get message Analysis Command\n");
       return FALSE;
     }
-    trigger_event_record(0, g_curlinfo.video_url);
+    // trigger_event_record(0, g_curlinfo.video_url);
+    send_event_to_recorder_simple(1, 0);
     // printf("notification_request [%s] \n", g_curlinfo.video_url);
     // notification_request(g_config.camera_id, "1", &g_curlinfo);
   } else if(json_object_has_member(object, "del_ptz_pos")){

@@ -29,6 +29,15 @@
 #include "nvds_opticalflow_meta.h"
 #include "nvds_utils.h"
 
+// API 서버 스레드
+static pthread_t g_api_server_tid;
+static gboolean g_api_server_running = FALSE;
+static int *g_cam_indices = NULL;
+
+// 이벤트 전송 설정
+static gchar *g_event_tcp_host = "127.0.0.1";
+static gint g_event_tcp_port = EVENT_TCP_PORT;
+
 #define MAX_DETECTION_BUFFER_SIZE 10000  // 최대 10000 프레임
 #define BUFFER_DURATION_SEC 120          // 120초 버퍼
 
@@ -209,7 +218,7 @@ void* api_server_thread(void* arg) {
                                     json_builder_add_int_value(builder, results[i].objects[j].y + results[i].objects[j].height);
                                     json_builder_end_array(builder);
                                     json_builder_set_member_name(builder, "bbox_color");
-                                    const char *color_names[] = {"green", "yellow", "red", "blue", "none"};
+                                    const char *color_names[] = {"green", "yellow", "red", "blue", "null"};
                                     json_builder_add_string_value(builder, color_names[results[i].objects[j].bbox_color]);
                                     
                                     json_builder_set_member_name(builder, "has_bbox");
@@ -520,8 +529,24 @@ void send_event_to_recorder_simple(int class_id, int camera_id) {
     
     // ISO 8601 형식의 타임스탬프 생성
     GDateTime *now = g_date_time_new_now_local();
-    gchar *timestamp = g_date_time_format_iso8601(now);
+    gchar *timestamp = g_date_time_format(now, "%Y-%m-%dT%H:%M:%S.%f");
     
+    time_t raw_time;
+    gettimeofday(&tv, NULL);
+    raw_time = tv.tv_sec;
+    struct tm *timeinfo = localtime(&raw_time);
+    
+    char timestamp_buf[64];
+    snprintf(timestamp_buf, sizeof(timestamp_buf), 
+             "%04d-%02d-%02dT%02d:%02d:%02d.%06ld",
+             timeinfo->tm_year + 1900,
+             timeinfo->tm_mon + 1,
+             timeinfo->tm_mday,
+             timeinfo->tm_hour,
+             timeinfo->tm_min,
+             timeinfo->tm_sec,
+             tv.tv_usec);
+
     // 클래스 이름 매핑
     const char *class_names[] = {
         "normal_cow",
@@ -550,18 +575,18 @@ void send_event_to_recorder_simple(int class_id, int camera_id) {
             "\"camera\":\"%s\","
             "\"objects\":[",
         camera_name,
-        timestamp,
-        timestamp,
+        timestamp_buf,
+        timestamp_buf,
         camera_name
     );
-    
+
     // 검출된 객체가 있으면 추가
     if (has_detection && latest.num_objects > 0) {
         for (guint i = 0; i < latest.num_objects; i++) {
             if (i > 0) g_string_append(json_str, ",");
             
             const char *obj_class = class_id < NUM_CLASSES ? class_names[class_id] : "unknown";
-            const char *color_names[] = {"green", "yellow", "red", "blue", "none"};
+            const char *color_names[] = {"green", "yellow", "red", "blue", "null"};
 
             g_string_append_printf(json_str,
                 "{"
@@ -589,7 +614,7 @@ void send_event_to_recorder_simple(int class_id, int camera_id) {
             "\"class\":\"%s\","
             "\"confidence\":0.95,"
             "\"bbox\":[0,0,0,0],"
-            "\"bbox_color\":none,"
+            "\"bbox_color\":null,"
             "\"has_bbox\":false"
             "}",
             obj_class
@@ -1762,48 +1787,51 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInf
 void setup_nv_analysis()
 {
   glog_trace("g_config.device_cnt=%d\n", g_config.device_cnt);
-  static int index1, index2;
-
-  g_api_server_running = TRUE;
-  pthread_create(&g_api_server_tid, NULL, api_server_thread, NULL);
-
+  
+  // camera_buffers 초기화
   init_camera_buffers();
+  
+  // 각 카메라별로 동적 할당
+  g_cam_indices = g_malloc(sizeof(int) * g_config.device_cnt);
 
   for(int cam_idx = 0 ; cam_idx < g_config.device_cnt ; cam_idx++){
     GstPad *osd_sink_pad = NULL;
     char element_name[32];
-    GstElement *nvosd;
+    GstElement *nvosd = NULL;
+    
     sprintf(element_name, "nvosd_%d", cam_idx+1);
     glog_trace ("element_name=%s\n", element_name);
+    
     nvosd = gst_bin_get_by_name(GST_BIN (g_pipeline), element_name);
     if (nvosd == NULL){
       glog_error ("Fail get %s element\n", element_name);
       continue;
     }
-    //g_object_set (G_OBJECT (nvosd), "display-text", 0, NULL);
+    
     osd_sink_pad = gst_element_get_static_pad(nvosd, "sink");
     if (!osd_sink_pad){
-      g_print ("Unable to get sink pad\n");
-      return;
+      g_print ("Unable to get sink pad for %s\n", element_name);
+      gst_object_unref(nvosd);
+      continue;
     }
-    else {
-      g_print("osd_sink_pad_buffer_probe cam_idx=%d\n", cam_idx);
-      if (cam_idx == 0) {
-        index1 = cam_idx;
-        gst_pad_add_probe(osd_sink_pad, GST_PAD_PROBE_TYPE_BUFFER, osd_sink_pad_buffer_probe, &index1, NULL);   //RGB camera
-      }
-      else if (cam_idx == 1) {
-        index2 = cam_idx;
-        gst_pad_add_probe(osd_sink_pad, GST_PAD_PROBE_TYPE_BUFFER, osd_sink_pad_buffer_probe, &index2, NULL);   //Thermal camera
-      }
-    }
+    
+    // 각 카메라별로 고유한 인덱스 저장
+    g_cam_indices[cam_idx] = cam_idx;
+    
+    g_print("osd_sink_pad_buffer_probe cam_idx=%d\n", cam_idx);
+    gst_pad_add_probe(osd_sink_pad, GST_PAD_PROBE_TYPE_BUFFER, 
+                      osd_sink_pad_buffer_probe, &g_cam_indices[cam_idx], NULL);
+    
     gst_object_unref(osd_sink_pad);
-  } 
-  //start wait event thread .
+    gst_object_unref(nvosd);
+  }
+  
+  // 메모리 해제는 endup_nv_analysis에서 처리해야 함
+  
+  //start wait event thread
   pthread_mutex_init(&g_notifier_mutex, NULL);                  
   pthread_create(&g_tid, NULL, process_notification, NULL);    
 }
-
 
 void endup_nv_analysis()
 {
@@ -1820,5 +1848,10 @@ void endup_nv_analysis()
   }
 
   cleanup_camera_buffers();
+
+  if (g_cam_indices) {
+    g_free(g_cam_indices);
+    g_cam_indices = NULL;
+  }
 }
 

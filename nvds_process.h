@@ -39,14 +39,6 @@
 #define EVENT_TCP_PORT 9999
 #define TCP_BUFFER_SIZE 4096
 
-// API 서버 스레드
-static pthread_t g_api_server_tid;
-static gboolean g_api_server_running = FALSE;
-
-// 이벤트 전송 설정
-static gchar *g_event_tcp_host = "localhost";
-static gint g_event_tcp_port = EVENT_TCP_PORT;
-
 #if CLASSES_NUM == 5
 enum 
 {

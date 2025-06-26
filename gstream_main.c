@@ -456,11 +456,10 @@ static gboolean start_pipeline(void)
              "location=%s/cam%d_snapshot.jpg  "
              "%s  "
              "%s  "
-             "%s  "
              "tee name=video_enc_tee1_%d "
              "%s  "
              "tee name=video_enc_tee2_%d ",
-             g_config.video_src[i], g_config.snapshot_enc[i], g_config.snapshot_path, i, g_config.record_enc[i], g_config.video_infer[i], g_config.video_enc[i], i, g_config.video_enc2[i], i);
+             g_config.video_src[i], g_config.snapshot_enc[i], g_config.snapshot_path, i, g_config.video_infer[i], g_config.video_enc[i], i, g_config.video_enc2[i], i);
     strcat(str_pipeline, str_video);
   }
 
@@ -1249,7 +1248,7 @@ void version_log()
   // export version
   export_version("gstream_main", GSTREAM_MAIN_VER, 1);
   export_version("webrtc_sender", WEBRTC_SENDER_VER, 0);
-  export_version("webrtc_recorder", WEBRTC_RECORD_VER, 0);
+  // export_version("webrtc_recorder", WEBRTC_RECORD_VER, 0);
   get_time(time, sizeof(time));
   export_version("program start time", time, 0);
 }

@@ -19,7 +19,6 @@ typedef struct
   char* video_infer[2];
   char* video_enc[2];
   char* video_enc2[2];
-  char* record_enc[2];
   char* snapshot_enc[2];
 
   char* server_ip;

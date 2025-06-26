@@ -174,8 +174,8 @@ gboolean add_peer_to_pipeline (const gchar * peer_id, const gchar * channel)    
   int pid = fork();                   //LJH, 사용자의 접속에 따라 fork 가 계속 일어남.
   if(pid == 0){
     //./webrtc_sender --stream_cnt=1 --stream_base_port=5000 --comm_port=6000 --peer-id="test"C
-    // char *programName = "./webrtc_sender";
-    char *programName = "./webrtc_sender_go";
+    char *programName = "./webrtc_sender";
+    // char *programName = "./webrtc_sender_go";
     char strtemp[4][64];
     char peer_id_arg[256];
     snprintf(strtemp[0], 64, "--stream_cnt=%d", 1);       //LJH, 1개씩 해서 필요에 따라 여러번 호출될 수 있음.
@@ -214,6 +214,7 @@ gboolean add_peer_to_pipeline (const gchar * peer_id, const gchar * channel)    
 static pid_t g_record_pid = 0;
 gboolean start_process_rec() 
 {
+  return TRUE;
   glog_trace("start_process_rec\n");
   if (g_record_pid != 0) {
     glog_error("record process already exist, so return\n");

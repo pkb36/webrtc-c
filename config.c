@@ -92,7 +92,6 @@ int load_config(const char *file_name, WebRTCConfig* config, CurlIinfoType *curl
     if (json_object_has_member (object, video_name)) {
         child = json_object_get_object_member (object, video_name);
         const char* value_src = json_object_get_string_member (child, "src");
-        const char* value_record = json_object_get_string_member (child, "record");
         const char* value_infer = json_object_get_string_member (child, "infer");
         const char* value_enc = json_object_get_string_member (child, "enc");
         const char* value_enc2 = json_object_get_string_member (child, "enc2");
@@ -101,7 +100,6 @@ int load_config(const char *file_name, WebRTCConfig* config, CurlIinfoType *curl
         config->video_infer[i] = strdup(value_infer);
         config->video_enc[i] = strdup(value_enc);
         config->video_enc2[i] = strdup(value_enc2);
-        config->record_enc[i] = strdup(value_record);
         config->snapshot_enc[i] = strdup(value_snapshot);
 
         glog_trace("parse member %s : %s, %s, %s, %s, %s\n", 
