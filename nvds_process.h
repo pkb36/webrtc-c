@@ -170,7 +170,6 @@ typedef struct {
 
 
 extern int g_event_class_id;
-extern CurlIinfoType g_curlinfo;
 extern GstElement *g_pipeline;
 extern WebRTCConfig g_config;
 extern DeviceSetting g_setting;
@@ -202,7 +201,7 @@ void setup_nv_analysis();
 void endup_nv_analysis();
 void check_events_for_notification(int cam_idx, int init);
 int get_opt_flow_object(int cam_idx, int obj_id);
-void send_event_to_recorder_simple(int class_id, int camera_id);
+gboolean send_event_to_recorder_simple(int class_id, int camera_id);
 gint get_detections_for_timerange(guint camera_id, guint64 start_time, 
                                   guint64 end_time, DetectionData *results, 
                                   gint max_results);

@@ -31,7 +31,6 @@ typedef enum {
 
 // 기존 함수들
 void start_event_buf_process(int cam_idx);
-int trigger_event_record(int cam_idx, char* http_str_path_out);
 int get_udp_port(UDPClientProcess process, CameraDevice device, StreamChoice stream_choice, int stream_cnt);
 
 // 전역 변수들

@@ -37,7 +37,6 @@ extern void cam_angle_change();
 
 /* Function prototypes */
 int is_process_running(const char *process_name);
-void wait_recording_finish();
 int is_send_eventer_running();
 void unlock_sending_event();
 void zoomin(int count);

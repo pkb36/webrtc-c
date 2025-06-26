@@ -58,8 +58,6 @@ int trigger_event_record(int cam_idx, char* http_str_path_out) {
 		strcpy(codec_name, "H264");
 	}
 
-    glog_trace("trigger_event_record cam_idx=%d, codec=%s\n", cam_idx, codec_name);
-    
     int pid = check_process(5200 + cam_idx);
     if(pid != -1){
         glog_trace("event recording is already running [(5200+cam_idx)=%d] [pid=%d]\n", 5200 + cam_idx, pid);

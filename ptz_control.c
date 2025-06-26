@@ -31,7 +31,7 @@ static unsigned char ptz_move_speed = 0x10;
 
 extern DeviceSetting g_setting;
 extern int stop_retry_count;
-extern int g_notifier_running;
+extern int g_event_recording;
 
 int g_no_zoom = 0;
 int ptz_err_code = PTZ_NORMAL;
@@ -414,7 +414,7 @@ void *process_auto_move_ptz(void *arg)
       }
 
       for(int i = 0; i < 15; i++){                    //LJH, add analysis lasting time when event recording is on process
-        if (g_notifier_running == 0)                  //LJH, if it is not recording
+        if (g_event_recording == 0)                  //LJH, if it is not recording
           break;
         sleep(1);
       }

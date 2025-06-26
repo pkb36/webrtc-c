@@ -23,8 +23,8 @@ GSTREAM_OBJS := $(OBJ_DIR)/gstream_main.o $(OBJ_DIR)/config.o $(OBJ_DIR)/serial_
                 $(OBJ_DIR)/nvds_utils.o $(OBJ_DIR)/event_recorder.o $(OBJ_DIR)/ptz_control.o $(OBJ_DIR)/video_convert.o
 
 # 최종 실행파일들
-TARGETS := $(BUILD_DIR)/gstream_main $(BUILD_DIR)/webrtc_sender $(BUILD_DIR)/webrtc_recorder \
-           $(BUILD_DIR)/webrtc_event_recorder $(BUILD_DIR)/disk_check
+TARGETS := $(BUILD_DIR)/gstream_main $(BUILD_DIR)/webrtc_sender \
+           $(BUILD_DIR)/disk_check
 
 # 기본 타겟
 all: $(TARGETS)
@@ -42,12 +42,6 @@ $(BUILD_DIR)/gstream_main: $(GSTREAM_OBJS) $(COMMON_OBJS)
 	"$(CC)" $(CFLAGS) -DPTZ_SUPPORT $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/webrtc_sender: $(OBJ_DIR)/webrtc_sender.o $(OBJ_DIR)/socket_comm.o $(COMMON_OBJS)
-	"$(CC)" $(CFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/webrtc_recorder: $(OBJ_DIR)/webrtc_recorder.o $(OBJ_DIR)/video_convert.o $(COMMON_OBJS)
-	"$(CC)" $(CFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/webrtc_event_recorder: $(OBJ_DIR)/webrtc_event_recorder.o $(COMMON_OBJS)
 	"$(CC)" $(CFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/disk_check: $(OBJ_DIR)/disk_check.o $(COMMON_OBJS)
@@ -70,8 +64,6 @@ $(BUILD_DIR)/log_test: $(COMMON_OBJS)
 install: $(TARGETS)
 	cp $(BUILD_DIR)/gstream_main ./
 	cp $(BUILD_DIR)/webrtc_sender ./
-	cp $(BUILD_DIR)/webrtc_recorder ./
-	cp $(BUILD_DIR)/webrtc_event_recorder ./
 	cp $(BUILD_DIR)/disk_check ./
 
 # 정리
