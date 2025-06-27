@@ -69,7 +69,7 @@ install: $(TARGETS)
 # 정리
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f gstream_main webrtc_sender webrtc_recorder webrtc_event_recorder disk_check
+	rm -f gstream_main webrtc_sender disk_check
 
 # 의존성 관리 (옵션)
 .PHONY: all clean install

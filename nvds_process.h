@@ -11,7 +11,6 @@
 #include "gstream_main.h"
 #include "json_utils.h"
 #include "ptz_control.h"
-#include "event_recorder.h"
 #include "gstnvdsmeta.h"
 #include "global_define.h"
 

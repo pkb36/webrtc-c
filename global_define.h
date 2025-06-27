@@ -16,7 +16,7 @@
 #define TRIGGER_TRACKER_FOR_VIDEO_CLIP          0               //for test, apply this for testing with video clip  
 
 #define NUM_OBJS                              300
-
+#define NUM_CAMS    2
 // 색상 열거형
 typedef enum {
     BBOX_GREEN = 0,
@@ -25,6 +25,23 @@ typedef enum {
     BBOX_BLUE,
     BBOX_NONE
 } BboxColor;
+
+typedef enum {
+	RGB_CAM = 0,
+	THERMAL_CAM,
+	NUMBER_CAMS,
+} CameraDevice;
+
+typedef enum {
+	SENDER = 0,
+	RECORDER,
+	EVENT_RECORDER,
+} UDPClientProcess;
+
+typedef enum {
+	MAIN_STREAM = 0,
+	SECOND_STREAM,
+} StreamChoice;
 
 typedef struct {
     guint64 timestamp;      // 타임스탬프 (나노초)

@@ -7,7 +7,6 @@
 #include "webrtc_peer.h"
 #include "config.h"
 #include "process_cmd.h"
-#include "event_recorder.h"
 
 extern WebRTCConfig g_config;
 
@@ -214,61 +213,6 @@ gboolean add_peer_to_pipeline (const gchar * peer_id, const gchar * channel)    
 static pid_t g_record_pid = 0;
 gboolean start_process_rec() 
 {
-  return TRUE;
-  glog_trace("start_process_rec\n");
-  if (g_record_pid != 0) {
-    glog_error("record process already exist, so return\n");
-    return FALSE;
-  }
-
-  int stream_base_port = get_udp_port(EVENT_RECORDER, RGB_CAM, g_config.record_enc_index, 0);
-  
-  int record_pid = check_process(stream_base_port);
-  if (record_pid != -1) {
-    glog_error("record process already %d exist, so return\n", record_pid);
-    return FALSE;
-  }
-
-  int pid = fork();
-  if (pid == 0) {
-    char str_codec_name[32] = {0,};
-    for (int i = 0; i < strlen(g_codec_name); i++) {
-      str_codec_name[i] = toupper((unsigned char)g_codec_name[i]);
-    }
-
-    glog_trace("forked child process for webrtc_recorder with codec %s\n", str_codec_name);
-
-    setenv("HOME", "/home/nvidia", 1);
-    setenv("USER", "nvidia", 1);
-
-    char strtemp[5][64];
-    char location_arg[256];
-
-    snprintf(strtemp[0], sizeof(strtemp[0]), "--stream_cnt=%d", g_device_cnt);
-    snprintf(strtemp[1], sizeof(strtemp[1]), "--stream_base_port=%d", stream_base_port);
-    snprintf(strtemp[2], sizeof(strtemp[2]), "--codec_name=%s", str_codec_name);
-    snprintf(strtemp[3], sizeof(strtemp[3]), "--duration=%d", g_config.record_duration);
-    snprintf(location_arg, sizeof(location_arg), "--location=%s", g_config.record_path);
-
-    // ✅ 비밀번호 없이 sudo 실행 (훨씬 깔끔하고 안전!)
-    char command[1024];
-    snprintf(command, sizeof(command),
-      "sudo -n ./webrtc_recorder %s %s %s %s %s",
-      strtemp[0], strtemp[1], strtemp[2], strtemp[3], location_arg);
-
-    glog_trace("Executing webrtc_recorder with passwordless sudo\n");
-    execl("/bin/sh", "sh", "-c", command, (char *)NULL);
-
-    glog_error("execl failed: %s\n", strerror(errno));
-    exit(1);
-  } else if (pid > 0) {
-    g_record_pid = pid;
-    glog_trace("success start record process with PID %d\n", pid);
-  } else {
-    glog_error("fork failed: %s\n", strerror(errno));
-    return FALSE;
-  }
-
   return TRUE;
 }
 

@@ -33,9 +33,7 @@
 #include "nvds_process.h"
 #include "nvds_utils.h"
 #include "ptz_control.h"
-#include "event_recorder.h"
 #include "log_wrapper.h"
-#include "video_convert.h"
 #include "command_handler.h"
 
 #include <unistd.h> // write, close 등을 위해 추가
@@ -1238,7 +1236,6 @@ void version_log()
     // export version
     export_version("gstream_main", GSTREAM_MAIN_VER, 1);
     export_version("webrtc_sender", WEBRTC_SENDER_VER, 0);
-    // export_version("webrtc_recorder", WEBRTC_RECORD_VER, 0);
     get_time(time, sizeof(time));
     export_version("program start time", time, 0);
 }
