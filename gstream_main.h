@@ -5,6 +5,7 @@
 #include "json_utils.h"
 #include "log_wrapper.h"
 #include "version.h"
+#include "global_define.h"
 
 enum AppState
 {

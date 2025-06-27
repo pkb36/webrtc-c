@@ -15,4 +15,30 @@
 
 #define TRIGGER_TRACKER_FOR_VIDEO_CLIP          0               //for test, apply this for testing with video clip  
 
+#define NUM_OBJS                              300
+
+// 색상 열거형
+typedef enum {
+    BBOX_GREEN = 0,
+    BBOX_YELLOW,
+    BBOX_RED,
+    BBOX_BLUE,
+    BBOX_NONE
+} BboxColor;
+
+typedef struct {
+    guint64 timestamp;      // 타임스탬프 (나노초)
+    guint frame_number;     // 프레임 번호
+    guint camera_id;        // 카메라 ID
+    guint num_objects;      // 검출된 객체 수
+    struct {
+        gint class_id;
+        gfloat confidence;
+        gfloat x, y, width, height;
+        BboxColor bbox_color;   // 박스 색상 추가
+        gboolean has_bbox;      // 박스 표시 여부
+    } objects[NUM_OBJS];    // 객체 정보 배열
+} DetectionData;
+
+
 #endif

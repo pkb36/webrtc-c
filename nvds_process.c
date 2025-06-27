@@ -29,9 +29,6 @@
 #include "nvds_opticalflow_meta.h"
 #include "nvds_utils.h"
 
-// API 서버 스레드
-static pthread_t g_api_server_tid = 0;  // 0으로 초기화
-static gboolean g_api_server_running = FALSE;
 static int *g_cam_indices = NULL;
 
 // 이벤트 전송 설정
@@ -92,229 +89,6 @@ static gboolean event_recording_timeout(gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
-void *api_server_thread(void *arg)
-{
-	int server_fd, new_socket;
-	struct sockaddr_in address;
-	int opt = 1;
-	int addrlen = sizeof(address);
-	char buffer[TCP_BUFFER_SIZE] = {0};
-
-	// 소켓 생성
-	if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
-	{
-		glog_error("API 서버 소켓 생성 실패");
-		return NULL;
-	}
-
-	// 소켓 옵션 설정
-	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
-				   &opt, sizeof(opt)))
-	{
-		glog_error("setsockopt 실패");
-		close(server_fd);
-		return NULL;
-	}
-
-	address.sin_family = AF_INET;
-	address.sin_addr.s_addr = INADDR_ANY;
-	address.sin_port = htons(API_SERVER_PORT);
-
-	// 바인드
-	if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
-	{
-		glog_error("API 서버 바인드 실패");
-		close(server_fd);
-		return NULL;
-	}
-
-	// 리슨
-	if (listen(server_fd, 3) < 0)
-	{
-		glog_error("리슨 실패");
-		close(server_fd);
-		return NULL;
-	}
-
-	glog_trace("API 서버 시작 (포트 %d)\n", API_SERVER_PORT);
-
-	// 타임아웃 설정
-	struct timeval tv;
-	tv.tv_sec = 1;
-	tv.tv_usec = 0;
-	setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof tv);
-
-	while (g_api_server_running)
-	{
-		new_socket = accept(server_fd, (struct sockaddr *)&address,
-							(socklen_t *)&addrlen);
-
-		if (new_socket < 0)
-		{
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
-			{
-				continue; // 타임아웃
-			}
-			glog_error("accept 실패");
-			continue;
-		}
-
-		// 요청 읽기
-		int valread = read(new_socket, buffer, TCP_BUFFER_SIZE);
-		if (valread > 0)
-		{
-			buffer[valread] = '\0';
-
-			// JSON 파싱
-			JsonParser *parser = json_parser_new();
-			GError *error = NULL;
-
-			if (json_parser_load_from_data(parser, buffer, -1, &error))
-			{
-				JsonNode *root = json_parser_get_root(parser);
-				JsonObject *obj = json_node_get_object(root);
-
-				const gchar *action = json_object_get_string_member(obj, "action");
-				gchar *response = NULL;
-
-				if (g_strcmp0(action, "get_detections") == 0)
-				{
-					// 검출 데이터 조회
-					const gchar *camera = json_object_get_string_member(obj, "camera");
-					const gchar *start_time = json_object_get_string_member(obj, "start_time");
-					const gchar *end_time = json_object_get_string_member(obj, "end_time");
-
-					// 시간 변환 (ISO 8601 형식)
-					GDateTime *start_dt = g_date_time_new_from_iso8601(start_time, NULL);
-					GDateTime *end_dt = g_date_time_new_from_iso8601(end_time, NULL);
-
-					if (start_dt && end_dt)
-					{
-						guint64 start_ts = g_date_time_to_unix(start_dt) * 1000000000;
-						guint64 end_ts = g_date_time_to_unix(end_dt) * 1000000000;
-
-						// 카메라 ID 찾기
-						gint cam_id = -1;
-						if (g_strcmp0(camera, "RGB_Camera") == 0)
-							cam_id = 0;
-						else if (g_strcmp0(camera, "Thermal_Camera") == 0)
-							cam_id = 1;
-
-						glog_info("receive get_detections");
-						glog_info("cam id : %d", cam_id);
-
-						if (cam_id >= 0)
-						{
-							DetectionData results[1000];
-							gint count = get_detections_for_timerange(cam_id, start_ts,
-																	  end_ts, results, 1000);
-
-							// JSON 응답 생성
-							JsonBuilder *builder = json_builder_new();
-							json_builder_begin_object(builder);
-							json_builder_set_member_name(builder, "status");
-							json_builder_add_string_value(builder, "success");
-							json_builder_set_member_name(builder, "detections");
-							json_builder_begin_array(builder);
-
-							for (gint i = 0; i < count; i++)
-							{
-								json_builder_begin_object(builder);
-								json_builder_set_member_name(builder, "timestamp");
-								json_builder_add_int_value(builder, results[i].timestamp);
-								json_builder_set_member_name(builder, "frame_number");
-								json_builder_add_int_value(builder, results[i].frame_number);
-								json_builder_set_member_name(builder, "camera");
-								json_builder_add_string_value(builder, camera);
-								json_builder_set_member_name(builder, "objects");
-								json_builder_begin_array(builder);
-
-								for (guint j = 0; j < results[i].num_objects; j++)
-								{
-									json_builder_begin_object(builder);
-									json_builder_set_member_name(builder, "class_id");
-									json_builder_add_int_value(builder, results[i].objects[j].class_id);
-									json_builder_set_member_name(builder, "confidence");
-									json_builder_add_double_value(builder, results[i].objects[j].confidence);
-									json_builder_set_member_name(builder, "bbox");
-									json_builder_begin_array(builder);
-									json_builder_add_int_value(builder, results[i].objects[j].x);
-									json_builder_add_int_value(builder, results[i].objects[j].y);
-									json_builder_add_int_value(builder, results[i].objects[j].x + results[i].objects[j].width);
-									json_builder_add_int_value(builder, results[i].objects[j].y + results[i].objects[j].height);
-									json_builder_end_array(builder);
-									json_builder_set_member_name(builder, "bbox_color");
-									const char *color_names[] = {"green", "yellow", "red", "blue", "null"};
-									json_builder_add_string_value(builder, color_names[results[i].objects[j].bbox_color]);
-
-									json_builder_set_member_name(builder, "has_bbox");
-									json_builder_add_boolean_value(builder, results[i].objects[j].has_bbox);
-									json_builder_end_object(builder);
-								}
-
-								json_builder_end_array(builder);
-								json_builder_end_object(builder);
-							}
-
-							json_builder_end_array(builder);
-							json_builder_end_object(builder);
-
-							JsonNode *response_node = json_builder_get_root(builder);
-							response = json_to_string(response_node, FALSE);
-
-							g_object_unref(builder);
-						}
-
-						g_date_time_unref(start_dt);
-						g_date_time_unref(end_dt);
-					}
-				}
-				else if (g_strcmp0(action, "get_latest") == 0)
-				{
-					// 최신 검출 데이터 조회
-					const gchar *camera = json_object_get_string_member(obj, "camera");
-					gint cam_id = -1;
-					if (g_strcmp0(camera, "RGB_Camera") == 0)
-						cam_id = 0;
-					else if (g_strcmp0(camera, "Thermal_Camera") == 0)
-						cam_id = 1;
-
-					if (cam_id >= 0)
-					{
-						DetectionData latest;
-						if (get_latest_detection(cam_id, &latest))
-						{
-							// JSON 응답 생성
-							response = g_strdup_printf(
-								"{\"status\":\"success\",\"detection\":{"
-								"\"timestamp\":%ld,\"frame_number\":%d,"
-								"\"camera\":\"%s\",\"objects\":[]}}",
-								latest.timestamp, latest.frame_number, camera);
-						}
-					}
-				}
-
-				// 응답 전송
-				if (response == NULL)
-				{
-					response = g_strdup("{\"status\":\"error\",\"message\":\"Invalid request\"}");
-				}
-
-				send(new_socket, response, strlen(response), 0);
-				g_free(response);
-			}
-
-			g_object_unref(parser);
-		}
-
-		close(new_socket);
-	}
-
-	close(server_fd);
-	glog_trace("API 서버 종료\n");
-	return NULL;
-}
-
 // 카메라 버퍼 초기화 함수
 void init_camera_buffers()
 {
@@ -333,7 +107,7 @@ void init_camera_buffers()
 
 // 검출 데이터를 버퍼에 추가하는 함수
 void add_detection_to_buffer(guint camera_id, guint frame_number,
-							 NvDsObjectMetaList *obj_meta_list)
+							 NvDsObjectMetaList *obj_meta_list, NvDsFrameMeta *frame_meta)
 {
 	if (camera_id >= NUM_CAMS)
 		return;
@@ -344,7 +118,12 @@ void add_detection_to_buffer(guint camera_id, guint frame_number,
 
 	// 새 검출 데이터 생성
 	DetectionData *det = &cam_buf->buffer[cam_buf->tail];
-	det->timestamp = g_get_real_time() * 1000; // 마이크로초를 나노초로
+	GDateTime *now = g_date_time_new_now_local();
+	det->timestamp = g_date_time_to_unix(now) * 1000000000; // 초를 나노초로
+	gint microseconds = g_date_time_get_microsecond(now); // 마이크로초 가져오기
+	det->timestamp += microseconds * 1000; // 마이크로초를 나노초로 변환해서 추가
+
+	g_date_time_unref(now);
 	det->frame_number = frame_number;
 	det->camera_id = camera_id;
 	det->num_objects = 0;
@@ -353,6 +132,9 @@ void add_detection_to_buffer(guint camera_id, guint frame_number,
 	NvDsObjectMeta *obj_meta = NULL;
 	gint obj_count = 0;
 
+	gint frame_width = frame_meta->source_frame_width;
+	gint frame_height = frame_meta->source_frame_height;
+
 	for (NvDsObjectMetaList *l = obj_meta_list; l != NULL && obj_count < NUM_OBJS;
 		 l = l->next)
 	{
@@ -360,10 +142,16 @@ void add_detection_to_buffer(guint camera_id, guint frame_number,
 
 		det->objects[obj_count].class_id = obj_meta->class_id;
 		det->objects[obj_count].confidence = obj_meta->confidence;
-		det->objects[obj_count].x = (gint)obj_meta->rect_params.left;
-		det->objects[obj_count].y = (gint)obj_meta->rect_params.top;
-		det->objects[obj_count].width = (gint)obj_meta->rect_params.width;
-		det->objects[obj_count].height = (gint)obj_meta->rect_params.height;
+		det->objects[obj_count].x = obj_meta->rect_params.left / (gfloat)frame_width;
+		det->objects[obj_count].y = obj_meta->rect_params.top / (gfloat)frame_height;
+		det->objects[obj_count].width = obj_meta->rect_params.width / (gfloat)frame_width;
+		det->objects[obj_count].height = obj_meta->rect_params.height / (gfloat)frame_height;
+		printf("Object %d: class_id=%d, confidence=%.2f, bbox=(%.2f, %.2f, %.2f, %.2f)\n",
+			   obj_count, det->objects[obj_count].class_id,
+			   det->objects[obj_count].confidence,
+			   det->objects[obj_count].x, det->objects[obj_count].y,
+			   det->objects[obj_count].width, det->objects[obj_count].height);
+			   
 		det->objects[obj_count].bbox_color = get_object_color(camera_id,
 															  obj_meta->object_id % NUM_OBJS,
 															  obj_meta->class_id);
@@ -643,7 +431,7 @@ gboolean send_event_to_recorder_simple(int class_id, int camera_id)
 								   "{"
 								   "\"class\":\"%s\","
 								   "\"confidence\":%.2f,"
-								   "\"bbox\":[%d,%d,%d,%d],"
+								   "\"bbox\":[%.2f,%.2f,%.2f,%.2f],"
 								   "\"bbox_color\":\"%s\","
 								   "\"has_bbox\":%s"
 								   "}",
@@ -1566,8 +1354,11 @@ gint get_detections_for_timerange(guint camera_id, guint64 start_time,
 								  guint64 end_time, DetectionData *results,
 								  gint max_results)
 {
-	if (camera_id >= NUM_CAMS || results == NULL)
+	if (camera_id >= NUM_CAMS)
+	{
+		glog_error("Invalid camera ID: %d\n", camera_id);
 		return 0;
+	}
 
 	CameraBuffer *cam_buf = &camera_buffers[camera_id];
 	gint result_count = 0;
@@ -1708,16 +1499,18 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 		init_camera_buffers();
 	}
 
+	static guint64 frame_counters[NUM_CAMS] = {0};
+
 	for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next)
 	{
 		NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)(l_frame->data);
 		// 카메라 ID와 프레임 번호 추출
 		guint camera_id = cam_idx;
-		guint frame_number = frame_meta->frame_num;
+		guint frame_number = frame_counters[camera_id]++;
 
 		if (frame_meta->obj_meta_list != NULL)
 		{
-			add_detection_to_buffer(camera_id, frame_number, frame_meta->obj_meta_list);
+			add_detection_to_buffer(camera_id, frame_number, frame_meta->obj_meta_list, frame_meta);
 		}
 
 		for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next)
@@ -1929,38 +1722,10 @@ void setup_nv_analysis()
 		gst_object_unref(osd_sink_pad);
 		gst_object_unref(nvosd);
 	}
-
-	if (g_api_server_tid == 0)  // 이미 실행 중이 아닌 경우만
-    {
-        g_api_server_running = TRUE;
-        
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-        
-        if (pthread_create(&g_api_server_tid, &attr, api_server_thread, NULL) != 0)
-        {
-            glog_error("API 서버 스레드 생성 실패: %s", strerror(errno));
-            g_api_server_running = FALSE;
-            g_api_server_tid = 0;
-        }
-        else
-        {
-            glog_trace("API 서버 스레드 시작됨 (포트 %d)\n", API_SERVER_PORT);
-        }
-        
-        pthread_attr_destroy(&attr);
-    }
 }
 
 void endup_nv_analysis()
 {
-	g_api_server_running = FALSE;
-	if (g_api_server_tid)
-	{
-		pthread_join(g_api_server_tid, NULL);
-	}
-
 	if (g_tid)
 	{
 		g_event_class_id = EVENT_EXIT;

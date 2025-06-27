@@ -1273,6 +1273,8 @@ int main(int argc, char *argv[])
         unsetenv("DISPLAY");
     }
 
+    glog_info("load config file : %s\n", g_config_name);
+
     if (!g_config_name)
         g_config_name = g_strdup("config.json");
 

@@ -50,6 +50,304 @@ static pthread_t g_heartbit_tid = 0;
 static int g_heartbit_timeout = 5000;
 static gboolean g_firsttime_call = FALSE;
 
+static pthread_t g_api_server_tid = 0;
+
+extern gint get_detections_for_timerange(guint camera_id, guint64 start_time, 
+                                  guint64 end_time, DetectionData *results, 
+                                  gint max_results);
+
+extern gboolean get_latest_detection(guint camera_id, DetectionData *latest);
+
+
+void *process_api_server(void *arg)
+{
+  glog_trace("start api_server_thread %d \n", 123456);
+
+	int server_fd, new_socket;
+	struct sockaddr_in address;
+	int opt = 1;
+	int addrlen = sizeof(address);
+	char buffer[TCP_BUFFER_SIZE] = {0};
+
+	// 소켓 생성
+	if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+	{
+		glog_error("API 서버 소켓 생성 실패");
+		return NULL;
+	}
+
+	// 소켓 옵션 설정
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+				   &opt, sizeof(opt)) < 0)
+	{
+		glog_error("setsockopt 실패");
+		close(server_fd);
+		return NULL;
+	}
+
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(API_SERVER_PORT);
+
+	// 바인드
+	if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
+	{
+		glog_error("API 서버 바인드 실패");
+		close(server_fd);
+		return NULL;
+	}
+
+	// 리슨
+	if (listen(server_fd, 3) < 0)
+	{
+		glog_error("리슨 실패");
+		close(server_fd);
+		return NULL;
+	}
+
+	glog_trace("API 서버 시작 (포트 %d)\n", API_SERVER_PORT);
+
+	// 타임아웃 설정
+	struct timeval tv;
+	tv.tv_sec = 1;
+	tv.tv_usec = 0;
+	if (setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv)) < 0) {
+        glog_info("SO_RCVTIMEO 설정 실패");
+    }
+
+	while (1)
+	{
+        memset(&address, 0, sizeof(address));
+        addrlen = sizeof(address);
+
+		new_socket = accept(server_fd, (struct sockaddr *)&address,
+							(socklen_t *)&addrlen);
+
+		if (new_socket < 0)
+		{
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			{
+				continue; // 타임아웃
+			}
+			glog_error("accept 실패");
+			continue;
+		}
+
+		// 요청 읽기
+        tv.tv_sec = 5;  // 5초 타임아웃
+        tv.tv_usec = 0;
+        setsockopt(new_socket, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+        setsockopt(new_socket, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
+
+        // 요청 처리
+        memset(buffer, 0, TCP_BUFFER_SIZE);  // 버퍼 초기화
+
+		int valread = read(new_socket, buffer, TCP_BUFFER_SIZE);
+		if (valread > 0)
+		{
+			buffer[valread] = '\0';
+
+			// JSON 파싱
+      glog_trace("Received request: %s\n", buffer);
+			JsonParser *parser = json_parser_new();
+			GError *error = NULL;
+
+			if (json_parser_load_from_data(parser, buffer, -1, &error))
+			{
+				JsonNode *root = json_parser_get_root(parser);
+				JsonObject *obj = json_node_get_object(root);
+
+				const gchar *action = json_object_get_string_member(obj, "action");
+				gchar *response = NULL;
+
+				if (g_strcmp0(action, "get_detections") == 0)
+				{
+					// 검출 데이터 조회
+          const gchar *camera = json_object_get_string_member(obj, "camera");
+          const gchar *start_time = json_object_get_string_member(obj, "start_time");
+          const gchar *end_time = json_object_get_string_member(obj, "end_time");
+
+          // NULL 체크 추가
+          if (!start_time || !end_time || !camera) {
+              glog_error("Missing required parameters\n");
+              return 0;
+          }
+
+          char formatted_start[64], formatted_end[64];
+          char *dot_pos;
+
+          strncpy(formatted_start, start_time, sizeof(formatted_start) - 1);
+          dot_pos = strchr(formatted_start, '.');
+          if (dot_pos) *dot_pos = '\0';
+
+          strncpy(formatted_end, end_time, sizeof(formatted_end) - 1);
+          dot_pos = strchr(formatted_end, '.');
+          if (dot_pos) *dot_pos = '\0';
+
+          // 로컬 타임존으로 파싱 (Z 없이)
+          GTimeZone *local_tz = g_time_zone_new_local();
+          GDateTime *start_dt = g_date_time_new_from_iso8601(formatted_start, local_tz);
+          GDateTime *end_dt = g_date_time_new_from_iso8601(formatted_end, local_tz);
+
+					if (start_dt && end_dt)
+					{
+						guint64 start_ts = g_date_time_to_unix(start_dt) * 1000000000;
+						guint64 end_ts = g_date_time_to_unix(end_dt) * 1000000000;
+
+            glog_trace("Timestamps - start: %lu, end: %lu\n", start_ts, end_ts);
+
+						// 카메라 ID 찾기
+						gint cam_id = -1;
+						if (g_strcmp0(camera, "RGB_Camera") == 0)
+							cam_id = 0;
+						else if (g_strcmp0(camera, "Thermal_Camera") == 0)
+							cam_id = 1;
+
+						glog_info("receive get_detections");
+						glog_info("cam id : %d", cam_id);
+
+						if (cam_id >= 0)
+						{
+							const gint MAX_FRAMES = 300;  // 30초 * 10fps
+        
+              // 힙에 할당
+              DetectionData *results = calloc(500, sizeof(DetectionData));
+              if (!results) {
+                  glog_error("Memory allocation failed for %d frames", MAX_FRAMES);
+                  response = g_strdup("{\"status\":\"error\",\"message\":\"Memory allocation failed\"}");
+                  send(new_socket, response, strlen(response), 0);
+                  g_free(response);
+                  continue;
+              }
+              
+              gint count = get_detections_for_timerange(cam_id, start_ts,
+                                                      end_ts, results, MAX_FRAMES);
+              
+              glog_info("Retrieved %d detections for %d frames", count, MAX_FRAMES);
+
+							// JSON 응답 생성
+							JsonBuilder *builder = json_builder_new();
+							json_builder_begin_object(builder);
+							json_builder_set_member_name(builder, "status");
+							json_builder_add_string_value(builder, "success");
+							json_builder_set_member_name(builder, "detections");
+							json_builder_begin_array(builder);
+
+							for (gint i = 0; i < count; i++)
+							{
+								json_builder_begin_object(builder);
+								json_builder_set_member_name(builder, "timestamp");
+								json_builder_add_int_value(builder, results[i].timestamp);
+								json_builder_set_member_name(builder, "frame_number");
+								json_builder_add_int_value(builder, results[i].frame_number);
+								json_builder_set_member_name(builder, "camera");
+								json_builder_add_string_value(builder, camera);
+								json_builder_set_member_name(builder, "objects");
+								json_builder_begin_array(builder);
+
+								for (guint j = 0; j < results[i].num_objects; j++)
+								{
+									json_builder_begin_object(builder);
+									json_builder_set_member_name(builder, "class_id");
+									json_builder_add_int_value(builder, results[i].objects[j].class_id);
+									json_builder_set_member_name(builder, "confidence");
+									json_builder_add_double_value(builder, results[i].objects[j].confidence);
+									json_builder_set_member_name(builder, "bbox");
+									json_builder_begin_array(builder);
+									json_builder_add_double_value(builder, results[i].objects[j].x);
+									json_builder_add_double_value(builder, results[i].objects[j].y);
+									json_builder_add_double_value(builder, results[i].objects[j].x + results[i].objects[j].width);
+									json_builder_add_double_value(builder, results[i].objects[j].y + results[i].objects[j].height);
+									json_builder_end_array(builder);
+									json_builder_set_member_name(builder, "bbox_color");
+									const char *color_names[] = {"green", "yellow", "red", "blue", "null"};
+									json_builder_add_string_value(builder, color_names[results[i].objects[j].bbox_color]);
+
+									json_builder_set_member_name(builder, "has_bbox");
+									json_builder_add_boolean_value(builder, results[i].objects[j].has_bbox);
+									json_builder_end_object(builder);
+								}
+
+								json_builder_end_array(builder);
+								json_builder_end_object(builder);
+							}
+
+							json_builder_end_array(builder);
+							json_builder_end_object(builder);
+
+							JsonNode *response_node = json_builder_get_root(builder);
+							response = json_to_string(response_node, FALSE);
+
+							g_object_unref(builder);
+						}
+
+            g_time_zone_unref(local_tz);
+						g_date_time_unref(start_dt);
+						g_date_time_unref(end_dt);
+					}
+          else
+          {
+            glog_error("Failed to parse datetime - start: %s, end: %s\n", 
+                   formatted_start, formatted_end);
+            if (start_dt) g_date_time_unref(start_dt);
+            if (end_dt) g_date_time_unref(end_dt);
+            g_time_zone_unref(local_tz);
+
+            response = g_strdup("{\"status\":\"error\",\"message\":\"Invalid time format\"}");
+          }
+				}
+				else if (g_strcmp0(action, "get_latest") == 0)
+				{
+					// 최신 검출 데이터 조회
+					const gchar *camera = json_object_get_string_member(obj, "camera");
+					gint cam_id = -1;
+					if (g_strcmp0(camera, "RGB_Camera") == 0)
+						cam_id = 0;
+					else if (g_strcmp0(camera, "Thermal_Camera") == 0)
+						cam_id = 1;
+
+					if (cam_id >= 0)
+					{
+						DetectionData latest;
+						if (get_latest_detection(cam_id, &latest))
+						{
+							// JSON 응답 생성
+							response = g_strdup_printf(
+								"{\"status\":\"success\",\"detection\":{"
+								"\"timestamp\":%ld,\"frame_number\":%d,"
+								"\"camera\":\"%s\",\"objects\":[]}}",
+								latest.timestamp, latest.frame_number, camera);
+						}
+					}
+				}
+
+				// 응답 전송
+				if (response == NULL)
+				{
+					response = g_strdup("{\"status\":\"error\",\"message\":\"Invalid request\"}");
+				}
+
+				send(new_socket, response, strlen(response), 0);
+				g_free(response);
+			}
+
+			g_object_unref(parser);
+		}
+
+		// 소켓 정리
+        shutdown(new_socket, SHUT_RDWR);  // 소켓 셧다운 추가
+        close(new_socket);
+        new_socket = -1;
+	}
+
+	if (server_fd >= 0) {
+        shutdown(server_fd, SHUT_RDWR);
+        close(server_fd);
+    }
+	glog_trace("API 서버 종료\n");
+	return NULL;
+}
 
 void send_ptz_serial_data(const gchar * str)
 {
@@ -286,7 +584,6 @@ exit_func:
   pthread_mutex_unlock(&g_send_info_mutex);
 }
 
-
 void *process_heartbit(void *arg)
 {
   static int count = 0;
@@ -315,14 +612,19 @@ void *process_heartbit(void *arg)
 void start_heartbit(int timeout)
 {
   pthread_create(&g_heartbit_tid, NULL, process_heartbit, NULL);
+  pthread_create(&g_api_server_tid, NULL, process_api_server, NULL);
 }
-
 
 void  kill_heartbit()
 {
   if(g_heartbit_tid){
     pthread_kill(g_heartbit_tid, 0);
     g_heartbit_tid = 0; 
+  }
+
+  if(g_api_server_tid){
+    pthread_kill(g_api_server_tid, 0);
+    g_api_server_tid = 0; 
   }
 }
 

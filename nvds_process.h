@@ -13,12 +13,12 @@
 #include "ptz_control.h"
 #include "event_recorder.h"
 #include "gstnvdsmeta.h"
-#include "gstream_main.h"
+#include "global_define.h"
 
 #define EVENT_EXIT                            9999
 #define CENTER_X                              (1280/2)
 #define CENTER_Y                              (720/2)
-#define NUM_OBJS                              300
+
 #define PER_CAM_SEC_FRAME                     10
 #define BUFFER_SIZE                           4
 #define XY_DIVISOR                            4
@@ -145,30 +145,6 @@ enum {
   NO_BBOX,
 };
 
-// 색상 열거형
-typedef enum {
-    BBOX_GREEN = 0,
-    BBOX_YELLOW,
-    BBOX_RED,
-    BBOX_BLUE,
-    BBOX_NONE
-} BboxColor;
-
-typedef struct {
-    guint64 timestamp;      // 타임스탬프 (나노초)
-    guint frame_number;     // 프레임 번호
-    guint camera_id;        // 카메라 ID
-    guint num_objects;      // 검출된 객체 수
-    struct {
-        gint class_id;
-        gfloat confidence;
-        gint x, y, width, height;
-        BboxColor bbox_color;   // 박스 색상 추가
-        gboolean has_bbox;      // 박스 표시 여부
-    } objects[NUM_OBJS];    // 객체 정보 배열
-} DetectionData;
-
-
 extern int g_event_class_id;
 extern GstElement *g_pipeline;
 extern WebRTCConfig g_config;
@@ -202,13 +178,15 @@ void endup_nv_analysis();
 void check_events_for_notification(int cam_idx, int init);
 int get_opt_flow_object(int cam_idx, int obj_id);
 gboolean send_event_to_recorder_simple(int class_id, int camera_id);
+
 gint get_detections_for_timerange(guint camera_id, guint64 start_time, 
                                   guint64 end_time, DetectionData *results, 
                                   gint max_results);
 gboolean get_latest_detection(guint camera_id, DetectionData *result);
+
 void init_camera_buffers(void);
 void cleanup_camera_buffers(void);
 void add_detection_to_buffer(guint camera_id, guint frame_number, 
-                            NvDsObjectMetaList *obj_meta_list);
+                            NvDsObjectMetaList *obj_meta_list, NvDsFrameMeta *frame_meta);
 BboxColor get_object_color(guint camera_id, guint object_id, gint class_id);
 #endif
