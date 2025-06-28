@@ -25,7 +25,6 @@
 #include "nvds_process.h"
 #include "curllib.h"
 #include "device_setting.h"
-#include "event_recorder.h"
 #include "nvds_opticalflow_meta.h"
 #include "nvds_utils.h"
 
@@ -146,12 +145,12 @@ void add_detection_to_buffer(guint camera_id, guint frame_number,
 		det->objects[obj_count].y = obj_meta->rect_params.top / (gfloat)frame_height;
 		det->objects[obj_count].width = obj_meta->rect_params.width / (gfloat)frame_width;
 		det->objects[obj_count].height = obj_meta->rect_params.height / (gfloat)frame_height;
-		printf("Object %d: class_id=%d, confidence=%.2f, bbox=(%.2f, %.2f, %.2f, %.2f)\n",
-			   obj_count, det->objects[obj_count].class_id,
-			   det->objects[obj_count].confidence,
-			   det->objects[obj_count].x, det->objects[obj_count].y,
-			   det->objects[obj_count].width, det->objects[obj_count].height);
-			   
+		// printf("Object %d: class_id=%d, confidence=%.2f, bbox=(%.2f, %.2f, %.2f, %.2f)\n",
+		// 	   obj_count, det->objects[obj_count].class_id,
+		// 	   det->objects[obj_count].confidence,
+		// 	   det->objects[obj_count].x, det->objects[obj_count].y,
+		// 	   det->objects[obj_count].width, det->objects[obj_count].height);
+
 		det->objects[obj_count].bbox_color = get_object_color(camera_id,
 															  obj_meta->object_id % NUM_OBJS,
 															  obj_meta->class_id);

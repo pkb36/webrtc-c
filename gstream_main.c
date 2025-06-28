@@ -380,6 +380,22 @@ int check_internet_connection()
     return system(PING_TEST) == 0;
 }
 
+int get_udp_port(UDPClientProcess process, CameraDevice device, StreamChoice stream_choice, int stream_index)
+{
+	int udp_port = 0;
+	int max_sender_port = g_config.stream_base_port + (100 * stream_choice) + (g_config.device_cnt * g_config.max_stream_cnt) - 1;
+	int max_recorder_port = max_sender_port + 1 + g_config.device_cnt - 1;
+
+	if (process == SENDER)
+		udp_port = g_config.stream_base_port + (100 * stream_choice) + (g_config.device_cnt * stream_index) + device;
+	else if (process == RECORDER)
+		udp_port = (max_sender_port + 1) + device;
+	else if (process == EVENT_RECORDER)
+		udp_port = (max_recorder_port + 1) + device;
+
+	return udp_port;
+}
+
 gboolean cleanup_and_retry_connect(const gchar *msg, enum AppState state)
 {
     pthread_mutex_lock(&g_retry_connect_mutex);
@@ -1169,10 +1185,9 @@ static gboolean connect_check_callback(gpointer user_data)
 {
     static InternetState internet_state = INIT;
     int conn = check_internet_connection();
-    int sender_num = count_processes_by_name("webrtc_sender");
-
-    glog_trace("g_app_state=%d g_wait_reply_cnt=%d sender_num=%d CPU=%d GPU=%d g_source_cam_index=%d\n",
-               g_app_state, g_wait_reply_cnt, sender_num, get_temp(0), get_temp(1), g_source_cam_idx);
+    
+    glog_trace("g_app_state=%d g_wait_reply_cnt=%d CPU=%d GPU=%d g_source_cam_index=%d\n",
+               g_app_state, g_wait_reply_cnt, get_temp(0), get_temp(1), g_source_cam_idx);
 
     internet_state = get_internet_state(internet_state, conn);
     if (internet_state == INTERNET_RECONNECTED)

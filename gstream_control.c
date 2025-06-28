@@ -25,7 +25,6 @@
 #include "webrtc_peer.h"
 #include "nvds_process.h"
 #include "ptz_control.h"
-#include "event_recorder.h"
 
 extern WebRTCConfig g_config;
 extern CurlIinfoType g_curlinfo;
@@ -1133,9 +1132,6 @@ gboolean apply_setting()
   }
 
   set_camera_dn_mode(g_setting.camera_dn_mode);
-
-  //event buffer start   
-  start_event_buf_process(RGB_CAM);
   
   return TRUE;
 }
