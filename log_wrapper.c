@@ -7,6 +7,19 @@
 #include <stdlib.h>
 
 static FILE *log_fp = NULL;
+static char current_log_filename[256] = "";
+static char program_name_global[64] = "";
+static guint timer_id = 0;
+
+static void get_current_log_filename(char *filename, size_t size) {
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    
+    snprintf(filename, size, 
+             "./logs/%04d-%02d-%02d_%s.log",
+             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, 
+             program_name_global);
+}
 
 // DEBUG와 WARN을 제외하고 파일에 기록하는 커스텀 콜백
 static void selective_file_callback(log_Event *ev) {
@@ -26,9 +39,39 @@ static void selective_file_callback(log_Event *ev) {
     fflush(ev->udata);
 }
 
+static gboolean check_and_rotate_log_file(gpointer user_data) {
+    char new_filename[256];
+    get_current_log_filename(new_filename, sizeof(new_filename));
+    
+    // 현재 파일명과 다르면 새 파일로 변경
+    if (strcmp(current_log_filename, new_filename) != 0) {
+        log_info("Log file rotating from %s to %s", current_log_filename, new_filename);
+        
+        // 기존 파일 핸들 닫기
+        if (log_fp) {
+            fclose(log_fp);
+            log_fp = NULL;
+        }
+        
+        // 새 파일 열기
+        log_fp = fopen(new_filename, "a");
+        if (log_fp) {
+            strcpy(current_log_filename, new_filename);
+            log_add_callback(selective_file_callback, log_fp, LOG_TRACE);
+            log_info("Log file rotated to: %s", new_filename);
+        }
+    }
+    
+    return G_SOURCE_CONTINUE; // 타이머 계속 실행
+}
+
 void init_logging(const char* program_name) {
     // logs 디렉토리 생성
     system("mkdir -p ./logs");
+    
+    // ✅ 먼저 프로그램명 저장
+    strncpy(program_name_global, program_name, sizeof(program_name_global) - 1);
+    program_name_global[sizeof(program_name_global) - 1] = '\0';
     
     // 로그 레벨 설정 (모든 레벨 출력)
     log_set_level(LOG_TRACE);
@@ -36,28 +79,30 @@ void init_logging(const char* program_name) {
     // 콘솔 출력 활성화 (색상 포함)
     log_set_quiet(false);
     
-    // 로그 파일 이름 생성 (날짜_프로그램명.log)
-    char filename[256];
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    
-    snprintf(filename, sizeof(filename), 
-             "./logs/%04d-%02d-%02d_%s.log",
-             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, 
-             program_name);
+    // ✅ 새 함수로 파일명 생성
+    get_current_log_filename(current_log_filename, sizeof(current_log_filename));
     
     // 파일 출력 추가 (DEBUG, WARN 제외)
-    log_fp = fopen(filename, "a");
+    log_fp = fopen(current_log_filename, "a");
     if (log_fp) {
         // 기존의 log_add_fp 대신 커스텀 콜백 사용
         log_add_callback(selective_file_callback, log_fp, LOG_TRACE);
-        log_info("Log initialized: %s", filename);
+        log_info("Log initialized: %s", current_log_filename);
     } else {
-        log_error("Failed to open log file: %s", filename);
+        log_error("Failed to open log file: %s", current_log_filename);
     }
+    
+    // ✅ 타이머 설정 (60초마다 로그 파일 체크)
+    timer_id = g_timeout_add_seconds(60, check_and_rotate_log_file, NULL);
+    log_info("Log rotation timer started (check every 60 seconds)");
 }
 
 void cleanup_logging(void) {
+    if (timer_id > 0) {
+        g_source_remove(timer_id);
+        timer_id = 0;
+    }
+
     if (log_fp) {
         fclose(log_fp);
         log_fp = NULL;

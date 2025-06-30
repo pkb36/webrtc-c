@@ -145,12 +145,12 @@ void add_detection_to_buffer(guint camera_id, guint frame_number,
 		det->objects[obj_count].y = obj_meta->rect_params.top / (gfloat)frame_height;
 		det->objects[obj_count].width = obj_meta->rect_params.width / (gfloat)frame_width;
 		det->objects[obj_count].height = obj_meta->rect_params.height / (gfloat)frame_height;
-		// printf("Object %d: class_id=%d, confidence=%.2f, bbox=(%.2f, %.2f, %.2f, %.2f)\n",
-		// 	   obj_count, det->objects[obj_count].class_id,
-		// 	   det->objects[obj_count].confidence,
-		// 	   det->objects[obj_count].x, det->objects[obj_count].y,
-		// 	   det->objects[obj_count].width, det->objects[obj_count].height);
-
+		printf("Object %d: class_id=%d, confidence=%.2f, bbox=(%.2f, %.2f, %.2f, %.2f)\n",
+			   obj_count, det->objects[obj_count].class_id,
+			   det->objects[obj_count].confidence,
+			   det->objects[obj_count].x, det->objects[obj_count].y,
+			   det->objects[obj_count].width, det->objects[obj_count].height);
+			   
 		det->objects[obj_count].bbox_color = get_object_color(camera_id,
 															  obj_meta->object_id % NUM_OBJS,
 															  obj_meta->class_id);
@@ -520,9 +520,8 @@ int send_notification_to_server(int class_id)
 
 void gather_event(int class_id, int obj_id, int cam_idx)
 {
-	if (obj_id < 0 || obj_id >= NUM_OBJS) return;
-  	if (cam_idx < 0 || cam_idx >= NUM_CAMS) return;
-
+	if (obj_id < 0)
+		return;
 	if (class_id != CLASS_NORMAL_COW && class_id != CLASS_NORMAL_COW_SITTING)
 	{
 		obj_info[cam_idx][obj_id].detected_frame_count++;
@@ -899,12 +898,6 @@ void set_obj_rect_id(int cam_idx, NvDsObjectMeta *obj_meta, int cam_sec_interval
 {
 	static int x = 0, y = 0, width = 0, height = 0, rect_set = 0;
 
-	if (!obj_meta || obj_meta->object_id < 0) return;
-	if (cam_idx < 0 || cam_idx >= NUM_CAMS) return;
-	
-	int obj_idx = obj_meta->object_id % NUM_OBJS;
-	if (obj_idx < 0) obj_idx += NUM_OBJS;
-
 	if (obj_meta->object_id < 0)
 		return;
 
@@ -919,25 +912,25 @@ void set_obj_rect_id(int cam_idx, NvDsObjectMeta *obj_meta, int cam_sec_interval
 
 	if (rect_set)
 	{
-		obj_info[cam_idx][obj_idx].x = x;
-		obj_info[cam_idx][obj_idx].y = y;
-		obj_info[cam_idx][obj_idx].width = width;
-		obj_info[cam_idx][obj_idx].height = height;
+		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].x = x;
+		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].y = y;
+		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].width = width;
+		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].height = height;
 	}
 	else
 	{
-		obj_info[cam_idx][obj_idx].x = (int)obj_meta->rect_params.left;
-		obj_info[cam_idx][obj_idx].y = (int)obj_meta->rect_params.top;
-		obj_info[cam_idx][obj_idx].width = (int)obj_meta->rect_params.width;
-		obj_info[cam_idx][obj_idx].height = (int)obj_meta->rect_params.height;
+		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].x = (int)obj_meta->rect_params.left;
+		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].y = (int)obj_meta->rect_params.top;
+		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].width = (int)obj_meta->rect_params.width;
+		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].height = (int)obj_meta->rect_params.height;
 	}
 
-	obj_info[cam_idx][obj_idx].center_x = obj_info[cam_idx][obj_idx].x + (obj_info[cam_idx][obj_idx].width / 2);
-	obj_info[cam_idx][obj_idx].center_x = obj_info[cam_idx][obj_idx].y + (obj_info[cam_idx][obj_idx].height / 2);
+	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].center_x = obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].x + (obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].width / 2);
+	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].center_x = obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].y + (obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].height / 2);
 
-	obj_info[cam_idx][obj_idx].class_id = (int)obj_meta->class_id;
-	obj_info[cam_idx][obj_idx].diagonal = calculate_sqrt((double)width, (double)height);
-	obj_info[cam_idx][obj_idx].confidence = (float)obj_meta->confidence;
+	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].class_id = (int)obj_meta->class_id;
+	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].diagonal = calculate_sqrt((double)width, (double)height);
+	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].confidence = (float)obj_meta->confidence;
 }
 
 #if THERMAL_TEMP_INCLUDE
@@ -1028,28 +1021,30 @@ float get_pixel_temp(unsigned char r, unsigned char g, unsigned char b, unsigned
 
 void get_bbox_temp(GstBuffer *buf, int obj_id)
 {
-	if (!buf || obj_id < 0 || obj_id >= NUM_OBJS) return;
+	if (obj_id < 0)
+		return;
 
 	int count = 0;
 	float temp_total = 0.0, temp_avg = 0.0;
 	int x_start = 0, y_start = 0, width = 0, height = 0;
 	float pixel_temp = 0;
 	unsigned char r = 0, g = 0, b = 0, a = 0;
-	gboolean mapped = FALSE;
 
 	NvBufSurface *surface = NULL;
 	GstMapInfo map_info;
 
-	if (!gst_buffer_map(buf, &map_info, GST_MAP_READ)) {
-        glog_error("Failed to map buffer\n");
-        return;
-    }
-    mapped = TRUE;
+	if (!gst_buffer_map(buf, &map_info, GST_MAP_READ))
+	{
+		gst_buffer_unmap(buf, &map_info);
+		return;
+	}
 
 	surface = (NvBufSurface *)map_info.data;
-    if (surface == NULL) {
-        goto cleanup;
-    }
+	if (surface == NULL)
+	{
+		gst_buffer_unmap(buf, &map_info); // ✅ 에러시에도 unmap
+		return;
+	}
 
 	x_start = (obj_info[THERMAL_CAM][obj_id].x);
 	y_start = (obj_info[THERMAL_CAM][obj_id].y);
@@ -1083,12 +1078,8 @@ void get_bbox_temp(GstBuffer *buf, int obj_id)
 		add_value_and_calculate_avg(&obj_info[THERMAL_CAM][obj_id], (int)temp_avg);
 	}
 
+	// ✅ 반드시 unmap 호출 (메모리 누수 방지)
 	gst_buffer_unmap(buf, &map_info);
-
-cleanup:
-    if (mapped) {
-        gst_buffer_unmap(buf, &map_info);
-    }
 }
 
 #if 1
@@ -1107,25 +1098,15 @@ void update_display_text(NvDsObjectMeta *obj_meta, const char *text)
 
 void temp_display_text(NvDsObjectMeta *obj_meta)
 {
-	char display_text[256] = "", append_text[100] = "";
-	if (!obj_meta || obj_meta->object_id < 0) return;
-	
-	int obj_idx = obj_meta->object_id % NUM_OBJS;
-	if (obj_idx < 0) obj_idx += NUM_OBJS;
-	
-	if (obj_info[THERMAL_CAM][obj_idx].bbox_temp < (g_setting.threshold_under_temp + g_setting.temp_diff_threshold))
+	char display_text[100] = "", append_text[100] = "";
+	if (obj_meta->object_id < 0)
+		return;
+	if (obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp < (g_setting.threshold_under_temp + g_setting.temp_diff_threshold)) // LJH, 20250410
 		return;
 
-	strncpy(display_text, obj_meta->text_params.display_text, sizeof(display_text)-1);
-	display_text[sizeof(display_text)-1] = '\0';
-	
-	snprintf(append_text, sizeof(append_text), "[%d°C]",
-			obj_info[THERMAL_CAM][obj_idx].bbox_temp + 4);
-	
-	if (strlen(display_text) + strlen(append_text) < sizeof(display_text) - 1) {
-		strcat(display_text, append_text);
-	}
-
+	strcpy(display_text, obj_meta->text_params.display_text);
+	sprintf(append_text, "[%d°C]", obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp + 4);
+	strcat(display_text, append_text);
 	remove_newlines(display_text);
 	if (obj_meta->text_params.display_text)
 	{
@@ -1317,8 +1298,6 @@ void add_correction()
 
 void set_color(NvDsObjectMeta *obj_meta, int color, int set_text_blank)
 {
-	if (!obj_meta) return;
-
 	switch (color)
 	{
 	case GREEN_COLOR:
@@ -1750,14 +1729,7 @@ void endup_nv_analysis()
 	{
 		g_event_class_id = EVENT_EXIT;
 
-		struct timespec ts;
-		clock_gettime(CLOCK_REALTIME, &ts);
-		ts.tv_sec += 5;  
-		
-		if (pthread_timedjoin_np(g_tid, NULL, &ts) != 0) { 
-			glog_error("Thread join timeout, forcing termination\n");
-			pthread_cancel(g_tid);  
-		}
+		pthread_join(g_tid, NULL);
 	}
 
 	cleanup_camera_buffers();
