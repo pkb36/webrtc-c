@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <stdbool.h>
+#include <sys/stat.h>
 #include <nvbufsurface.h>
 #include <arpa/inet.h>
 
@@ -27,13 +28,10 @@
 #include "device_setting.h"
 #include "nvds_opticalflow_meta.h"
 #include "nvds_utils.h"
+#include "circular_buffer.h"
 
 static int *g_cam_indices = NULL;
 #define MAX_OPT_FLOW_ITERATIONS 1000
-// 이벤트 전송 설정
-static gchar *g_event_tcp_host = "127.0.0.1";
-static gint g_event_tcp_port = EVENT_TCP_PORT;
-
 #define MAX_DETECTION_BUFFER_SIZE 10000 // 최대 10000 프레임
 #define BUFFER_DURATION_SEC 120			// 120초 버퍼
 
@@ -47,7 +45,6 @@ typedef struct
 } CameraBuffer;
 
 static CameraBuffer camera_buffers[NUM_CAMS];
-static gboolean buffers_initialized = FALSE;
 
 int g_cam_index = 0;
 int g_noti_cam_idx = 0;
@@ -112,121 +109,6 @@ static gboolean event_recording_timeout(gpointer data)
 	g_event_recording = 0;
 	glog_trace("Event recording finished\n");
 	return G_SOURCE_REMOVE;
-}
-
-static GMutex buffer_init_mutex;
-// 카메라 버퍼 초기화 함수
-void init_camera_buffers()
-{
-    g_mutex_lock(&buffer_init_mutex);
-    
-    if (buffers_initialized) {
-        glog_trace("[init_camera_buffers] Already initialized\n");
-        g_mutex_unlock(&buffer_init_mutex);
-        return;
-    }
-
-    glog_info("[init_camera_buffers] Initializing camera buffers\n");
-
-    for (int i = 0; i < NUM_CAMS; i++)
-    {
-        camera_buffers[i].head = 0;
-        camera_buffers[i].tail = 0;
-        camera_buffers[i].count = 0;
-        g_mutex_init(&camera_buffers[i].mutex);
-        
-        glog_trace("[init_camera_buffers] Initialized buffer for camera %d\n", i);
-    }
-    
-    buffers_initialized = TRUE;
-    glog_info("[init_camera_buffers] All buffers initialized successfully\n");
-    
-    g_mutex_unlock(&buffer_init_mutex);
-}
-
-// 검출 데이터를 버퍼에 추가하는 함수
-void add_detection_to_buffer(guint camera_id, guint frame_number,
-							 NvDsObjectMetaList *obj_meta_list, NvDsFrameMeta *frame_meta)
-{
-	if (camera_id >= NUM_CAMS)
-		return;
-
-	CameraBuffer *cam_buf = &camera_buffers[camera_id];
-
-	g_mutex_lock(&cam_buf->mutex);
-
-	// 새 검출 데이터 생성
-	DetectionData *det = &cam_buf->buffer[cam_buf->tail];
-	GDateTime *now = g_date_time_new_now_local();
-	det->timestamp = g_date_time_to_unix(now) * 1000000000; // 초를 나노초로
-	gint microseconds = g_date_time_get_microsecond(now); // 마이크로초 가져오기
-	det->timestamp += microseconds * 1000; // 마이크로초를 나노초로 변환해서 추가
-
-	g_date_time_unref(now);
-	det->frame_number = frame_number;
-	det->camera_id = camera_id;
-	det->num_objects = 0;
-
-	// 객체 메타데이터 복사
-	NvDsObjectMeta *obj_meta = NULL;
-	gint obj_count = 0;
-
-	gint frame_width = frame_meta->source_frame_width;
-	gint frame_height = frame_meta->source_frame_height;
-
-	for (NvDsObjectMetaList *l = obj_meta_list; l != NULL && obj_count < NUM_OBJS;
-		 l = l->next)
-	{
-		obj_meta = (NvDsObjectMeta *)l->data;
-
-		det->objects[obj_count].class_id = obj_meta->class_id;
-		det->objects[obj_count].confidence = obj_meta->confidence;
-		det->objects[obj_count].x = obj_meta->rect_params.left / (gfloat)frame_width;
-		det->objects[obj_count].y = obj_meta->rect_params.top / (gfloat)frame_height;
-		det->objects[obj_count].width = obj_meta->rect_params.width / (gfloat)frame_width;
-		det->objects[obj_count].height = obj_meta->rect_params.height / (gfloat)frame_height;
-		// printf("Object %d: class_id=%d, confidence=%.2f, bbox=(%.2f, %.2f, %.2f, %.2f)\n",
-		// 	   obj_count, det->objects[obj_count].class_id,
-		// 	   det->objects[obj_count].confidence,
-		// 	   det->objects[obj_count].x, det->objects[obj_count].y,
-		// 	   det->objects[obj_count].width, det->objects[obj_count].height);
-			   
-		det->objects[obj_count].bbox_color = get_object_color(camera_id,
-															  obj_meta->object_id % NUM_OBJS,
-															  obj_meta->class_id);
-		det->objects[obj_count].has_bbox = (det->objects[obj_count].bbox_color != BBOX_NONE);
-
-		obj_count++;
-	}
-	det->num_objects = obj_count;
-
-	// 원형 버퍼 업데이트
-	cam_buf->tail = (cam_buf->tail + 1) % MAX_DETECTION_BUFFER_SIZE;
-	if (cam_buf->count < MAX_DETECTION_BUFFER_SIZE)
-	{
-		cam_buf->count++;
-	}
-	else
-	{
-		// 버퍼가 가득 찬 경우 head도 이동
-		cam_buf->head = (cam_buf->head + 1) % MAX_DETECTION_BUFFER_SIZE;
-	}
-
-	// 오래된 데이터 제거 (120초 이상)
-	guint64 current_time = g_get_real_time() * 1000;
-	guint64 cutoff_time = current_time - (BUFFER_DURATION_SEC * 1000000000ULL);
-
-	while (cam_buf->count > 0)
-	{
-		DetectionData *oldest = &cam_buf->buffer[cam_buf->head];
-		if (oldest->timestamp >= cutoff_time)
-			break;
-
-		cam_buf->head = (cam_buf->head + 1) % MAX_DETECTION_BUFFER_SIZE;
-		cam_buf->count--;
-	}
-
-	g_mutex_unlock(&cam_buf->mutex);
 }
 
 void set_tracker_analysis(gboolean OnOff)
@@ -369,164 +251,11 @@ int is_process_running(const char *process_name)
 
 gboolean send_event_to_recorder_simple(int class_id, int camera_id)
 {
-	int sock = 0;
-	struct sockaddr_in serv_addr;
-
-	if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-	{
-		glog_error("이벤트 소켓 생성 실패");
-		return FALSE;
-	}
-
-	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_port = htons(g_event_tcp_port);
-
-	if (inet_pton(AF_INET, g_event_tcp_host, &serv_addr.sin_addr) <= 0)
-	{
-		glog_error("잘못된 주소");
-		close(sock);
-		return FALSE;
-	}
-
-	// 타임아웃 설정
-	struct timeval tv;
-	tv.tv_sec = 2;
-	tv.tv_usec = 0;
-	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof tv);
-
-	if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-	{
-		glog_error("이벤트 서버 연결 실패");
-		close(sock);
-		return FALSE;
-	}
-
-	// ISO 8601 형식의 타임스탬프 생성
-	GDateTime *now = g_date_time_new_now_local();
-	gchar *timestamp = g_date_time_format(now, "%Y-%m-%dT%H:%M:%S.%f");
-
-	time_t raw_time;
-	gettimeofday(&tv, NULL);
-	raw_time = tv.tv_sec;
-	struct tm *timeinfo = localtime(&raw_time);
-
-	char timestamp_buf[64];
-	snprintf(timestamp_buf, sizeof(timestamp_buf),
-			 "%04d-%02d-%02dT%02d:%02d:%02d.%06ld",
-			 timeinfo->tm_year + 1900,
-			 timeinfo->tm_mon + 1,
-			 timeinfo->tm_mday,
-			 timeinfo->tm_hour,
-			 timeinfo->tm_min,
-			 timeinfo->tm_sec,
-			 tv.tv_usec);
-
-	// 클래스 이름 매핑
-	const char *class_names[] = {
-		"normal_cow",
-		"heat_cow",
-		"flip_cow",
-		"labor_sign_cow",
-		"normal_cow_sitting",
-		"over_temp"};
-
-	const char *camera_name = g_config.camera_id;
-
-	// 최신 검출 데이터 가져오기
-	DetectionData latest;
-	gboolean has_detection = get_latest_detection(camera_id, &latest);
-
-	// JSON 이벤트 데이터 생성
-	GString *json_str = g_string_new(NULL);
-	g_string_append_printf(json_str,
-						   "{"
-						   "\"type\":\"manual_trigger\","
-						   "\"event_class\":%d," // CLASS enum 값 추가
-						   "\"camera\":\"%s\","
-						   "\"camera_type\":%d,"
-						   "\"timestamp\":\"%s\","
-						   "\"metadata\":{"
-						   "\"timestamp\":\"%s\","
-						   "\"camera\":\"%s\","
-						   "\"event_class\":%d," // metadata에도 추가
-						   "\"objects\":[",
-						   class_id, // event_class 값
-						   camera_name,
-						   camera_id,
-						   timestamp_buf,
-						   timestamp_buf,
-						   camera_name,
-						   class_id // metadata의 event_class 값
-	);
-
-	// 검출된 객체가 있으면 추가
-	if (has_detection && latest.num_objects > 0)
-	{
-		for (guint i = 0; i < latest.num_objects; i++)
-		{
-			if (i > 0)
-				g_string_append(json_str, ",");
-
-			const char *obj_class = class_id < NUM_CLASSES ? class_names[class_id] : "unknown";
-			const char *color_names[] = {"green", "yellow", "red", "blue", "null"};
-
-			g_string_append_printf(json_str,
-								   "{"
-								   "\"class\":\"%s\","
-								   "\"confidence\":%.2f,"
-								   "\"bbox\":[%.2f,%.2f,%.2f,%.2f],"
-								   "\"bbox_color\":\"%s\","
-								   "\"has_bbox\":%s"
-								   "}",
-								   obj_class,
-								   latest.objects[i].confidence,
-								   latest.objects[i].x,
-								   latest.objects[i].y,
-								   latest.objects[i].x + latest.objects[i].width,
-								   latest.objects[i].y + latest.objects[i].height,
-								   color_names[latest.objects[i].bbox_color],
-								   latest.objects[i].has_bbox ? "true" : "false");
-		}
-	}
-	else
-	{
-		// 검출된 객체가 없어도 이벤트 클래스 정보는 포함
-		const char *obj_class = class_id < NUM_CLASSES ? class_names[class_id] : "unknown";
-		g_string_append_printf(json_str,
-							   "{"
-							   "\"class\":\"%s\","
-							   "\"confidence\":0.95,"
-							   "\"bbox\":[0,0,0,0],"
-							   "\"bbox_color\":null,"
-							   "\"has_bbox\":false"
-							   "}",
-							   obj_class);
-	}
-
-	g_string_append(json_str, "]}}");
-
-	// 메시지 길이 + 데이터 전송
-	guint32 msg_len = json_str->len;
-	guint32 msg_len_be = htonl(msg_len); // 빅 엔디안으로 변환
-
-	send(sock, &msg_len_be, 4, 0);
-	send(sock, json_str->str, msg_len, 0);
-
-	// 응답 대기
-	char response[1024];
-	int n = recv(sock, response, 1024, 0);
-	if (n > 0)
-	{
-		response[n] = '\0';
-		glog_trace("이벤트 서버 응답: %s\n", response);
-	}
-
-	g_string_free(json_str, TRUE);
-	g_free(timestamp);
-	g_date_time_unref(now);
-	close(sock);
-
-	glog_trace("이벤트 전송 완료: class_id=%d, camera=%s\n", class_id, camera_name);
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	double event_time = ts.tv_sec + ts.tv_nsec / 1e9;
+	
+	on_event_detected(camera_id, class_id, event_time);
 
 	return TRUE;
 }
@@ -1560,19 +1289,6 @@ void get_buffer_stats(guint camera_id, gint *buffer_size,
 	g_mutex_unlock(&cam_buf->mutex);
 }
 
-void cleanup_camera_buffers()
-{
-	if (!buffers_initialized)
-		return;
-
-	for (int i = 0; i < NUM_CAMS; i++)
-	{
-		g_mutex_clear(&camera_buffers[i].mutex);
-	}
-
-	buffers_initialized = FALSE;
-}
-
 /* osd_sink_pad_buffer_probe  will extract metadata received on OSD sink pad
  * and update params for drawing rectangle, object information etc. */
 static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u_data) // LJH, this function is called per frame
@@ -1621,24 +1337,10 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 		init_temp_avg();
 	}
 #endif
-	if (!buffers_initialized)
-	{
-		init_camera_buffers();
-	}
-
-	static guint64 frame_counters[NUM_CAMS] = {0};
 
 	for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next)
 	{
 		NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)(l_frame->data);
-		// 카메라 ID와 프레임 번호 추출
-		guint camera_id = cam_idx;
-		guint frame_number = frame_counters[camera_id]++;
-
-		if (frame_meta->obj_meta_list != NULL)
-		{
-			add_detection_to_buffer(camera_id, frame_number, frame_meta->obj_meta_list, frame_meta);
-		}
 
 		for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next)
 		{
@@ -1820,12 +1522,79 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 	return GST_PAD_PROBE_OK;
 }
 
+static GstPadProbeReturn
+h264_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+    int camera_id = *(int *)user_data;
+    
+    // 캡스 확인하여 H.264 스트림인지 확인
+    GstCaps *caps = gst_pad_get_current_caps(pad);
+    if (caps) {
+		static gboolean codec_data_saved[NUM_CAMERAS] = {FALSE};
+        if (!codec_data_saved[camera_id]) {
+            save_codec_data(camera_id, caps);
+            codec_data_saved[camera_id] = TRUE;
+        }
+		
+        gchar *caps_str = gst_caps_to_string(caps);
+        
+        // 디버그: 처음 몇 번만 출력
+        static int debug_count = 0;
+        if (debug_count++ < 5) {
+            printf("Camera %d caps: %s\n", camera_id, caps_str);
+        }
+        
+        // H.264 스트림인지 확인
+        if (strstr(caps_str, "video/x-h264")) {
+            // 키프레임 확인
+            gboolean is_keyframe = !GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+            
+            // 순환 버퍼에 추가
+            add_frame_to_buffer(buffer, is_keyframe, camera_id);
+        }
+        
+        g_free(caps_str);
+        gst_caps_unref(caps);
+    }
+    
+    return GST_PAD_PROBE_OK;
+}
+
+static void on_event_save_complete(int camera_id, int event_id, const char *filename, const char *http_path, 
+                                  gboolean success, double event_time, void *user_data) {
+    if (success) {
+        g_print("=== Event Save Complete ===\n");
+        g_print("Camera: %d\n", camera_id);
+        g_print("File: %s\n", filename);
+        g_print("Event time: %.2f\n", event_time);
+        
+        // 여기서 필요한 추가 작업 수행
+        // 예: 데이터베이스에 기록, 알림 전송 등
+		char event_class_id[2] = {0};
+		event_class_id[0] = event_id + '0';
+
+		strcpy(g_curlinfo.video_url, http_path);
+		
+		notification_request(g_config.camera_id, event_class_id, &g_curlinfo);
+        
+        // 파일 정보 확인
+        struct stat st;
+        if (stat(filename, &st) == 0) {
+            g_print("File size: %.2f MB\n", st.st_size / (1024.0 * 1024.0));
+        }
+        
+        g_print("========================\n");
+    } else {
+        g_print("Event save failed for camera %d\n", camera_id);
+    }
+}
+
 void setup_nv_analysis()
 {
 	glog_trace("g_config.device_cnt=%d\n", g_config.device_cnt);
 
-	// camera_buffers 초기화
-	init_camera_buffers();
+	init_all_circular_buffers();
+	set_event_save_callback(on_event_save_complete, NULL);
 
 	// 각 카메라별로 동적 할당
 	g_cam_indices = g_malloc(sizeof(int) * g_config.device_cnt);
@@ -1861,6 +1630,23 @@ void setup_nv_analysis()
 		gst_pad_add_probe(osd_sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
 						  osd_sink_pad_buffer_probe, &g_cam_indices[cam_idx], NULL);
 
+		gchar *h264_element_name = g_strdup_printf("h264parse_%d", cam_idx + 1);
+    	GstElement *h264parse = gst_bin_get_by_name(GST_BIN(g_pipeline), h264_element_name);
+
+		if (h264parse) {
+			// src pad에 프로브 추가 (파싱된 H.264 스트림)
+			GstPad *srcpad = gst_element_get_static_pad(h264parse, "src");
+			gst_pad_add_probe(srcpad, GST_PAD_PROBE_TYPE_BUFFER,
+							h264_buffer_probe, &g_cam_indices[cam_idx], NULL);
+			gst_object_unref(srcpad);
+			g_print("Added probe to camera %d h264parse element\n", cam_idx);
+		} else {
+			g_warning("Could not find h264parse_%d element\n", cam_idx);
+		}
+		
+		g_free(h264_element_name);
+		gst_object_unref(h264parse);
+
 		gst_object_unref(osd_sink_pad);
 		gst_object_unref(nvosd);
 	}
@@ -1877,7 +1663,7 @@ void endup_nv_analysis()
 		pthread_join(g_tid, NULL);
 	}
 
-	cleanup_camera_buffers();
+	cleanup_all_circular_buffers();
 
 	if (g_cam_indices)
 	{

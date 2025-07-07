@@ -11,6 +11,7 @@
         "pthread.h": "c",
         "time.h": "c",
         "event_recorder.h": "c",
-        "curllib.h": "c"
+        "curllib.h": "c",
+        "circular_buffer.h": "c"
     }
 }

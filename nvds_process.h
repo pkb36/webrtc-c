@@ -145,6 +145,7 @@ enum {
 };
 
 extern int g_event_class_id;
+extern CurlIinfoType g_curlinfo;
 extern GstElement *g_pipeline;
 extern WebRTCConfig g_config;
 extern DeviceSetting g_setting;
@@ -183,9 +184,7 @@ gint get_detections_for_timerange(guint camera_id, guint64 start_time,
                                   gint max_results);
 gboolean get_latest_detection(guint camera_id, DetectionData *result);
 
-void init_camera_buffers(void);
-void cleanup_camera_buffers(void);
-void add_detection_to_buffer(guint camera_id, guint frame_number, 
-                            NvDsObjectMetaList *obj_meta_list, NvDsFrameMeta *frame_meta);
 BboxColor get_object_color(guint camera_id, guint object_id, gint class_id);
+int send_notification_to_server(int class_id);
+
 #endif

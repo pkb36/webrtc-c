@@ -162,6 +162,8 @@ int login_request(CurlIinfoType *j)
 
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
+
+		printf("json : %s \n", json);
 #if 1
 		printf("chunk size %d \n", (int)chunk.size);
         if (chunk.size > 0) {
@@ -312,6 +314,8 @@ int notification_request(char *cam, char *evt, CurlIinfoType *j)
 		res = curl_easy_perform(curl);
 		if (res != CURLE_OK)
 			glog_error("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+		else
+			glog_trace("Notification request sent successfully.\n");
 		usleep(100);
 
 		if (j->position[0] != 0) {

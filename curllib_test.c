@@ -34,7 +34,7 @@ int main (int argc, char *argv[]) {
     memset(&j, 0, sizeof(CurlIinfoType));
     
     // 기본 정보 설정
-    strcpy(j.phone, "01027061463");
+    strcpy(j.phone, "itechour");
     strcpy(j.password, "12341234");
     strcpy(j.server_ip, "52.194.238.184");
     j.port = 0;
@@ -43,7 +43,7 @@ int main (int argc, char *argv[]) {
     strcpy(j.snapshot_path, "/home/nvidia/webrtc/cam0_snapshot.jpg");
     
     // 비디오 URL 설정 
-    sprintf(j.video_url, "http://121.67.120.198:9627/data/EVENT_20250617/CAM0_162420.mp4");
+    sprintf(j.video_url, "http://121.67.120.198:9515/data/EVENT_20250707/CAM0_172229.mp4");
     printf("video url: %s\n", j.video_url);
     
     // 위치 정보 설정 (선택사항)

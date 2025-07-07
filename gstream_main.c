@@ -1439,6 +1439,9 @@ int main(int argc, char *argv[])
     atexit(on_handle_exit);
     signal(SIGABRT, handle_sigabrt);
 
+    login_request(&g_curlinfo);
+    glog_trace ("g_curlinfo.token:%s\n", g_curlinfo.token);
+
     g_main_loop_run(loop);
 
     free_webrtc_peer(TRUE);
