@@ -19,7 +19,7 @@
 #include "serial_comm.h"
 #include "device_setting.h"
 
-#define USE_JSON_MESSAGE_TEMPLATE   
+#define USE_JSON_MESSAGE_TEMPLATE
 #include "json_utils.h"
 #include "curllib.h"
 #include "webrtc_peer.h"
@@ -38,7 +38,7 @@ extern pthread_mutex_t g_retry_connect_mutex;
 extern void terminate_program();
 
 #if MINDULE_INCLUDE
-#define RANCH_SETTING_FILE    "ranch_setting.json"
+#define RANCH_SETTING_FILE "ranch_setting.json"
 extern RanchSetting g_ranch_setting;
 extern int g_frame_count[];
 
@@ -51,126 +51,127 @@ static gboolean g_firsttime_call = FALSE;
 
 static pthread_t g_api_server_tid = 0;
 
-extern gint get_detections_for_timerange(guint camera_id, guint64 start_time, 
-                                  guint64 end_time, DetectionData *results, 
-                                  gint max_results);
+extern gint get_detections_for_timerange(guint camera_id, guint64 start_time,
+                                         guint64 end_time, DetectionData *results,
+                                         gint max_results);
 
 extern gboolean get_latest_detection(guint camera_id, DetectionData *latest);
-
 
 void *process_api_server(void *arg)
 {
   glog_trace("start api_server_thread %d \n", 123456);
 
-	int server_fd, new_socket;
-	struct sockaddr_in address;
-	int opt = 1;
-	int addrlen = sizeof(address);
-	char buffer[TCP_BUFFER_SIZE] = {0};
+  int server_fd, new_socket;
+  struct sockaddr_in address;
+  int opt = 1;
+  int addrlen = sizeof(address);
+  char buffer[TCP_BUFFER_SIZE] = {0};
 
-	// 소켓 생성
-	if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-	{
-		glog_error("API 서버 소켓 생성 실패");
-		return NULL;
-	}
+  // 소켓 생성
+  if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+  {
+    glog_error("API 서버 소켓 생성 실패");
+    return NULL;
+  }
 
-	// 소켓 옵션 설정
-	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
-				   &opt, sizeof(opt)) < 0)
-	{
-		glog_error("setsockopt 실패");
-		close(server_fd);
-		return NULL;
-	}
+  // 소켓 옵션 설정
+  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                 &opt, sizeof(opt)) < 0)
+  {
+    glog_error("setsockopt 실패");
+    close(server_fd);
+    return NULL;
+  }
 
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = INADDR_ANY;
+  address.sin_port = htons(API_SERVER_PORT);
+
+  // 바인드
+  if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
+  {
+    glog_error("API 서버 바인드 실패");
+    close(server_fd);
+    return NULL;
+  }
+
+  // 리슨
+  if (listen(server_fd, 3) < 0)
+  {
+    glog_error("리슨 실패");
+    close(server_fd);
+    return NULL;
+  }
+
+  glog_trace("API 서버 시작 (포트 %d)\n", API_SERVER_PORT);
+
+  // 타임아웃 설정
+  struct timeval tv;
+  tv.tv_sec = 1;
+  tv.tv_usec = 0;
+  if (setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv)) < 0)
+  {
+    glog_info("SO_RCVTIMEO 설정 실패");
+  }
+
+  while (1)
+  {
     memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(API_SERVER_PORT);
+    addrlen = sizeof(address);
 
-	// 바인드
-	if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
-	{
-		glog_error("API 서버 바인드 실패");
-		close(server_fd);
-		return NULL;
-	}
+    new_socket = accept(server_fd, (struct sockaddr *)&address,
+                        (socklen_t *)&addrlen);
 
-	// 리슨
-	if (listen(server_fd, 3) < 0)
-	{
-		glog_error("리슨 실패");
-		close(server_fd);
-		return NULL;
-	}
-
-	glog_trace("API 서버 시작 (포트 %d)\n", API_SERVER_PORT);
-
-	// 타임아웃 설정
-	struct timeval tv;
-	tv.tv_sec = 1;
-	tv.tv_usec = 0;
-	if (setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv)) < 0) {
-        glog_info("SO_RCVTIMEO 설정 실패");
+    if (new_socket < 0)
+    {
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+      {
+        continue; // 타임아웃
+      }
+      glog_error("accept 실패");
+      continue;
     }
 
-	while (1)
-	{
-        memset(&address, 0, sizeof(address));
-        addrlen = sizeof(address);
+    // 요청 읽기
+    tv.tv_sec = 5; // 5초 타임아웃
+    tv.tv_usec = 0;
+    setsockopt(new_socket, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+    setsockopt(new_socket, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
 
-		new_socket = accept(server_fd, (struct sockaddr *)&address,
-							(socklen_t *)&addrlen);
+    // 요청 처리
+    memset(buffer, 0, TCP_BUFFER_SIZE); // 버퍼 초기화
 
-		if (new_socket < 0)
-		{
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
-			{
-				continue; // 타임아웃
-			}
-			glog_error("accept 실패");
-			continue;
-		}
+    int valread = read(new_socket, buffer, TCP_BUFFER_SIZE);
+    if (valread > 0)
+    {
+      buffer[valread] = '\0';
 
-		// 요청 읽기
-        tv.tv_sec = 5;  // 5초 타임아웃
-        tv.tv_usec = 0;
-        setsockopt(new_socket, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
-        setsockopt(new_socket, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
-
-        // 요청 처리
-        memset(buffer, 0, TCP_BUFFER_SIZE);  // 버퍼 초기화
-
-		int valread = read(new_socket, buffer, TCP_BUFFER_SIZE);
-		if (valread > 0)
-		{
-			buffer[valread] = '\0';
-
-			// JSON 파싱
+      // JSON 파싱
       glog_trace("Received request: %s\n", buffer);
-			JsonParser *parser = json_parser_new();
-			GError *error = NULL;
+      JsonParser *parser = json_parser_new();
+      GError *error = NULL;
 
-			if (json_parser_load_from_data(parser, buffer, -1, &error))
-			{
-				JsonNode *root = json_parser_get_root(parser);
-				JsonObject *obj = json_node_get_object(root);
+      if (json_parser_load_from_data(parser, buffer, -1, &error))
+      {
+        JsonNode *root = json_parser_get_root(parser);
+        JsonObject *obj = json_node_get_object(root);
 
-				const gchar *action = json_object_get_string_member(obj, "action");
-				gchar *response = NULL;
+        const gchar *action = json_object_get_string_member(obj, "action");
+        gchar *response = NULL;
 
-				if (g_strcmp0(action, "get_detections") == 0)
-				{
-					// 검출 데이터 조회
+        if (g_strcmp0(action, "get_detections") == 0)
+        {
+          // 검출 데이터 조회
           const gchar *camera = json_object_get_string_member(obj, "camera");
           const gchar *start_time = json_object_get_string_member(obj, "start_time");
           const gchar *end_time = json_object_get_string_member(obj, "end_time");
 
           // NULL 체크 추가
-          if (!start_time || !end_time || !camera) {
-              glog_error("Missing required parameters\n");
-              return 0;
+          if (!start_time || !end_time || !camera)
+          {
+            glog_error("Missing required parameters\n");
+            return 0;
           }
 
           char formatted_start[64], formatted_end[64];
@@ -178,246 +179,257 @@ void *process_api_server(void *arg)
 
           strncpy(formatted_start, start_time, sizeof(formatted_start) - 1);
           dot_pos = strchr(formatted_start, '.');
-          if (dot_pos) *dot_pos = '\0';
+          if (dot_pos)
+            *dot_pos = '\0';
 
           strncpy(formatted_end, end_time, sizeof(formatted_end) - 1);
           dot_pos = strchr(formatted_end, '.');
-          if (dot_pos) *dot_pos = '\0';
+          if (dot_pos)
+            *dot_pos = '\0';
 
           // 로컬 타임존으로 파싱 (Z 없이)
           GTimeZone *local_tz = g_time_zone_new_local();
           GDateTime *start_dt = g_date_time_new_from_iso8601(formatted_start, local_tz);
           GDateTime *end_dt = g_date_time_new_from_iso8601(formatted_end, local_tz);
 
-					if (start_dt && end_dt)
-					{
-						guint64 start_ts = g_date_time_to_unix(start_dt) * 1000000000;
-						guint64 end_ts = g_date_time_to_unix(end_dt) * 1000000000;
+          if (start_dt && end_dt)
+          {
+            guint64 start_ts = g_date_time_to_unix(start_dt) * 1000000000;
+            guint64 end_ts = g_date_time_to_unix(end_dt) * 1000000000;
 
             glog_trace("Timestamps - start: %lu, end: %lu\n", start_ts, end_ts);
 
-						// 카메라 ID 찾기
-						gint cam_id = -1;
-						if (g_strcmp0(camera, "RGB_Camera") == 0)
-							cam_id = 0;
-						else if (g_strcmp0(camera, "Thermal_Camera") == 0)
-							cam_id = 1;
+            // 카메라 ID 찾기
+            gint cam_id = -1;
+            if (g_strcmp0(camera, "RGB_Camera") == 0)
+              cam_id = 0;
+            else if (g_strcmp0(camera, "Thermal_Camera") == 0)
+              cam_id = 1;
 
-						glog_info("receive get_detections");
-						glog_info("cam id : %d", cam_id);
+            glog_info("receive get_detections");
+            glog_info("cam id : %d", cam_id);
 
-						if (cam_id >= 0)
-						{
-							const gint MAX_FRAMES = 300;  // 30초 * 10fps
-        
+            if (cam_id >= 0)
+            {
+              const gint MAX_FRAMES = 300; // 30초 * 10fps
+
               // 힙에 할당
               DetectionData *results = calloc(500, sizeof(DetectionData));
-              if (!results) {
-                  glog_error("Memory allocation failed for %d frames", MAX_FRAMES);
-                  response = g_strdup("{\"status\":\"error\",\"message\":\"Memory allocation failed\"}");
-                  send(new_socket, response, strlen(response), 0);
-                  g_free(response);
-                  continue;
+              if (!results)
+              {
+                glog_error("Memory allocation failed for %d frames", MAX_FRAMES);
+                response = g_strdup("{\"status\":\"error\",\"message\":\"Memory allocation failed\"}");
+                send(new_socket, response, strlen(response), 0);
+                g_free(response);
+                continue;
               }
-              
+
               gint count = get_detections_for_timerange(cam_id, start_ts,
-                                                      end_ts, results, MAX_FRAMES);
-              
+                                                        end_ts, results, MAX_FRAMES);
+
               glog_info("Retrieved %d detections for %d frames", count, MAX_FRAMES);
 
-							// JSON 응답 생성
-							JsonBuilder *builder = json_builder_new();
-							json_builder_begin_object(builder);
-							json_builder_set_member_name(builder, "status");
-							json_builder_add_string_value(builder, "success");
-							json_builder_set_member_name(builder, "detections");
-							json_builder_begin_array(builder);
+              // JSON 응답 생성
+              JsonBuilder *builder = json_builder_new();
+              json_builder_begin_object(builder);
+              json_builder_set_member_name(builder, "status");
+              json_builder_add_string_value(builder, "success");
+              json_builder_set_member_name(builder, "detections");
+              json_builder_begin_array(builder);
 
-							for (gint i = 0; i < count; i++)
-							{
-								json_builder_begin_object(builder);
-								json_builder_set_member_name(builder, "timestamp");
-								json_builder_add_int_value(builder, results[i].timestamp);
-								json_builder_set_member_name(builder, "frame_number");
-								json_builder_add_int_value(builder, results[i].frame_number);
-								json_builder_set_member_name(builder, "camera");
-								json_builder_add_string_value(builder, camera);
-								json_builder_set_member_name(builder, "objects");
-								json_builder_begin_array(builder);
+              for (gint i = 0; i < count; i++)
+              {
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "timestamp");
+                json_builder_add_int_value(builder, results[i].timestamp);
+                json_builder_set_member_name(builder, "frame_number");
+                json_builder_add_int_value(builder, results[i].frame_number);
+                json_builder_set_member_name(builder, "camera");
+                json_builder_add_string_value(builder, camera);
+                json_builder_set_member_name(builder, "objects");
+                json_builder_begin_array(builder);
 
-								for (guint j = 0; j < results[i].num_objects; j++)
-								{
-									json_builder_begin_object(builder);
-									json_builder_set_member_name(builder, "class_id");
-									json_builder_add_int_value(builder, results[i].objects[j].class_id);
-									json_builder_set_member_name(builder, "confidence");
-									json_builder_add_double_value(builder, results[i].objects[j].confidence);
-									json_builder_set_member_name(builder, "bbox");
-									json_builder_begin_array(builder);
-									json_builder_add_double_value(builder, results[i].objects[j].x);
-									json_builder_add_double_value(builder, results[i].objects[j].y);
-									json_builder_add_double_value(builder, results[i].objects[j].x + results[i].objects[j].width);
-									json_builder_add_double_value(builder, results[i].objects[j].y + results[i].objects[j].height);
-									json_builder_end_array(builder);
-									json_builder_set_member_name(builder, "bbox_color");
-									const char *color_names[] = {"green", "yellow", "red", "blue", "null"};
-									json_builder_add_string_value(builder, color_names[results[i].objects[j].bbox_color]);
+                for (guint j = 0; j < results[i].num_objects; j++)
+                {
+                  json_builder_begin_object(builder);
+                  json_builder_set_member_name(builder, "class_id");
+                  json_builder_add_int_value(builder, results[i].objects[j].class_id);
+                  json_builder_set_member_name(builder, "confidence");
+                  json_builder_add_double_value(builder, results[i].objects[j].confidence);
+                  json_builder_set_member_name(builder, "bbox");
+                  json_builder_begin_array(builder);
+                  json_builder_add_double_value(builder, results[i].objects[j].x);
+                  json_builder_add_double_value(builder, results[i].objects[j].y);
+                  json_builder_add_double_value(builder, results[i].objects[j].x + results[i].objects[j].width);
+                  json_builder_add_double_value(builder, results[i].objects[j].y + results[i].objects[j].height);
+                  json_builder_end_array(builder);
+                  json_builder_set_member_name(builder, "bbox_color");
+                  const char *color_names[] = {"green", "yellow", "red", "blue", "null"};
+                  json_builder_add_string_value(builder, color_names[results[i].objects[j].bbox_color]);
 
-									json_builder_set_member_name(builder, "has_bbox");
-									json_builder_add_boolean_value(builder, results[i].objects[j].has_bbox);
-									json_builder_end_object(builder);
-								}
+                  json_builder_set_member_name(builder, "has_bbox");
+                  json_builder_add_boolean_value(builder, results[i].objects[j].has_bbox);
+                  json_builder_end_object(builder);
+                }
 
-								json_builder_end_array(builder);
-								json_builder_end_object(builder);
-							}
+                json_builder_end_array(builder);
+                json_builder_end_object(builder);
+              }
 
-							json_builder_end_array(builder);
-							json_builder_end_object(builder);
+              json_builder_end_array(builder);
+              json_builder_end_object(builder);
 
-							JsonNode *response_node = json_builder_get_root(builder);
-							response = json_to_string(response_node, FALSE);
+              JsonNode *response_node = json_builder_get_root(builder);
+              response = json_to_string(response_node, FALSE);
 
-							g_object_unref(builder);
-						}
+              g_object_unref(builder);
+            }
 
             g_time_zone_unref(local_tz);
-						g_date_time_unref(start_dt);
-						g_date_time_unref(end_dt);
-					}
+            g_date_time_unref(start_dt);
+            g_date_time_unref(end_dt);
+          }
           else
           {
-            glog_error("Failed to parse datetime - start: %s, end: %s\n", 
-                   formatted_start, formatted_end);
-            if (start_dt) g_date_time_unref(start_dt);
-            if (end_dt) g_date_time_unref(end_dt);
+            glog_error("Failed to parse datetime - start: %s, end: %s\n",
+                       formatted_start, formatted_end);
+            if (start_dt)
+              g_date_time_unref(start_dt);
+            if (end_dt)
+              g_date_time_unref(end_dt);
             g_time_zone_unref(local_tz);
 
             response = g_strdup("{\"status\":\"error\",\"message\":\"Invalid time format\"}");
           }
-				}
-				else if (g_strcmp0(action, "get_latest") == 0)
-				{
-					// 최신 검출 데이터 조회
-					const gchar *camera = json_object_get_string_member(obj, "camera");
-					gint cam_id = -1;
-					if (g_strcmp0(camera, "RGB_Camera") == 0)
-						cam_id = 0;
-					else if (g_strcmp0(camera, "Thermal_Camera") == 0)
-						cam_id = 1;
+        }
+        else if (g_strcmp0(action, "get_latest") == 0)
+        {
+          // 최신 검출 데이터 조회
+          const gchar *camera = json_object_get_string_member(obj, "camera");
+          gint cam_id = -1;
+          if (g_strcmp0(camera, "RGB_Camera") == 0)
+            cam_id = 0;
+          else if (g_strcmp0(camera, "Thermal_Camera") == 0)
+            cam_id = 1;
 
-					if (cam_id >= 0)
-					{
-						DetectionData latest;
-						if (get_latest_detection(cam_id, &latest))
-						{
-							// JSON 응답 생성
-							response = g_strdup_printf(
-								"{\"status\":\"success\",\"detection\":{"
-								"\"timestamp\":%ld,\"frame_number\":%d,"
-								"\"camera\":\"%s\",\"objects\":[]}}",
-								latest.timestamp, latest.frame_number, camera);
-						}
-					}
-				}
+          if (cam_id >= 0)
+          {
+            DetectionData latest;
+            if (get_latest_detection(cam_id, &latest))
+            {
+              // JSON 응답 생성
+              response = g_strdup_printf(
+                  "{\"status\":\"success\",\"detection\":{"
+                  "\"timestamp\":%ld,\"frame_number\":%d,"
+                  "\"camera\":\"%s\",\"objects\":[]}}",
+                  latest.timestamp, latest.frame_number, camera);
+            }
+          }
+        }
 
-				// 응답 전송
-				if (response == NULL)
-				{
-					response = g_strdup("{\"status\":\"error\",\"message\":\"Invalid request\"}");
-				}
+        // 응답 전송
+        if (response == NULL)
+        {
+          response = g_strdup("{\"status\":\"error\",\"message\":\"Invalid request\"}");
+        }
 
-				send(new_socket, response, strlen(response), 0);
-				g_free(response);
-			}
+        send(new_socket, response, strlen(response), 0);
+        g_free(response);
+      }
 
-			g_object_unref(parser);
-		}
-
-		// 소켓 정리
-        shutdown(new_socket, SHUT_RDWR);  // 소켓 셧다운 추가
-        close(new_socket);
-        new_socket = -1;
-	}
-
-	if (server_fd >= 0) {
-        shutdown(server_fd, SHUT_RDWR);
-        close(server_fd);
+      g_object_unref(parser);
     }
-	glog_trace("API 서버 종료\n");
-	return NULL;
+
+    // 소켓 정리
+    shutdown(new_socket, SHUT_RDWR); // 소켓 셧다운 추가
+    close(new_socket);
+    new_socket = -1;
+  }
+
+  if (server_fd >= 0)
+  {
+    shutdown(server_fd, SHUT_RDWR);
+    close(server_fd);
+  }
+  glog_trace("API 서버 종료\n");
+  return NULL;
 }
 
-void send_ptz_serial_data(const gchar * str)
+void send_ptz_serial_data(const gchar *str)
 {
-	glog_trace ("Received PTZ Data: %s \n", str);
-		
-	char *str_temp = strdup(str);
-	unsigned char data[32];
-	char *ptr = strtok(str_temp, ",");
-	int len =0;
-	while (ptr != NULL){
-		data[len++] = hex_str2val(ptr);
-		ptr = strtok(NULL, ",");
-	}    
+  glog_trace("Received PTZ Data: %s \n", str);
 
-	if(is_open_serial()){
-	  write_serial(data, len);
-	}
+  char *str_temp = strdup(str);
+  unsigned char data[32];
+  char *ptr = strtok(str_temp, ",");
+  int len = 0;
+  while (ptr != NULL)
+  {
+    data[len++] = hex_str2val(ptr);
+    ptr = strtok(NULL, ",");
+  }
 
-	free(str_temp);
+  if (is_open_serial())
+  {
+    write_serial(data, len);
+  }
+
+  free(str_temp);
 }
 
-
-unsigned char* read_jpeg(const char *file_path, int* jpeg_size)
+unsigned char *read_jpeg(const char *file_path, int *jpeg_size)
 {
-    // 파일 열기
-    FILE *file = fopen(file_path, "rb");
-    if (file == NULL) {
-        glog_error( "파일을 열 수 없습니다.\n");
-        return NULL;
-    }
+  // 파일 열기
+  FILE *file = fopen(file_path, "rb");
+  if (file == NULL)
+  {
+    glog_error("파일을 열 수 없습니다.\n");
+    return NULL;
+  }
 
-    // 파일 크기 확인
-    fseek(file, 0, SEEK_END); // 파일 끝으로 이동
-    long file_size = ftell(file); // 현재 파일 위치 가져오기
-    fseek(file, 0, SEEK_SET); // 파일 시작으로 이동
+  // 파일 크기 확인
+  fseek(file, 0, SEEK_END);     // 파일 끝으로 이동
+  long file_size = ftell(file); // 현재 파일 위치 가져오기
+  fseek(file, 0, SEEK_SET);     // 파일 시작으로 이동
 
-    if (file_size < 0) {
-        glog_error( "파일 크기를 확인할 수 없습니다.\n");
-        fclose(file);
-        return NULL;
-    }
-
-    // 파일 크기만큼의 메모리 동적 할당
-    unsigned char *buffer = (unsigned char *)malloc(file_size);
-    if (buffer == NULL) {
-        glog_error( "메모리 할당 오류.\n");
-        fclose(file);
-        return NULL;
-    }
-
-    // 파일 내용 읽어 들이기
-    size_t bytes_read = fread(buffer, 1, file_size, file);
-    if (bytes_read != (size_t)file_size) {
-        glog_error( "파일 읽기 오류.\n");
-        fclose(file);
-        free(buffer);
-        return NULL;
-    }
-
-    *jpeg_size = file_size;
+  if (file_size < 0)
+  {
+    glog_error("파일 크기를 확인할 수 없습니다.\n");
     fclose(file);
-    return buffer;
-}
+    return NULL;
+  }
 
+  // 파일 크기만큼의 메모리 동적 할당
+  unsigned char *buffer = (unsigned char *)malloc(file_size);
+  if (buffer == NULL)
+  {
+    glog_error("메모리 할당 오류.\n");
+    fclose(file);
+    return NULL;
+  }
+
+  // 파일 내용 읽어 들이기
+  size_t bytes_read = fread(buffer, 1, file_size, file);
+  if (bytes_read != (size_t)file_size)
+  {
+    glog_error("파일 읽기 오류.\n");
+    fclose(file);
+    free(buffer);
+    return NULL;
+  }
+
+  *jpeg_size = file_size;
+  fclose(file);
+  return buffer;
+}
 
 gchar *image_to_base64(const gchar *source)
 {
   char jpegpath[512];
 
   int index = 0;
-  if(strcmp(source,"RGB") != 0){
+  if (strcmp(source, "RGB") != 0)
+  {
     index = 1;
   }
 
@@ -425,43 +437,43 @@ gchar *image_to_base64(const gchar *source)
 
   sprintf(jpegpath, "%s/cam%d_snapshot.jpg", g_config.snapshot_path, index);
   int input_len;
-  unsigned char* input = read_jpeg(jpegpath, &input_len);
-  if(input == NULL){
-    glog_error( "fail read [%s] failed.\n", jpegpath);
+  unsigned char *input = read_jpeg(jpegpath, &input_len);
+  if (input == NULL)
+  {
+    glog_error("fail read [%s] failed.\n", jpegpath);
     return NULL;
   }
-  
+
   gchar *base64_data = g_base64_encode(input, input_len);
-  if (base64_data == NULL) {
-      glog_error( "Base64 encoding failed.\n");
-      free(input);
-      return NULL;
+  if (base64_data == NULL)
+  {
+    glog_error("Base64 encoding failed.\n");
+    free(input);
+    return NULL;
   }
 
   free(input);
   return base64_data;
 }
 
-
-static gchar* camera_cam_info_template = "{\"name\": \"%s\",  \"fw_version\": \"%s\",  \"ai_version\": \"%s\"}";
-gboolean send_register_with_server (SoupWebsocketConnection *ws_conn)
+static gchar *camera_cam_info_template = "{\"name\": \"%s\",  \"fw_version\": \"%s\",  \"ai_version\": \"%s\"}";
+gboolean send_register_with_server(SoupWebsocketConnection *ws_conn)
 {
-  if (soup_websocket_connection_get_state (ws_conn) !=
+  if (soup_websocket_connection_get_state(ws_conn) !=
       SOUP_WEBSOCKET_STATE_OPEN)
     return FALSE;
 
-  //추후 이름과 버전 기타 정보를 받아 들일 수 있도록 함
-  //변경이 되지 않는 정보를 전달
-  gchar * caminfo_msg; 
+  // 추후 이름과 버전 기타 정보를 받아 들일 수 있도록 함
+  // 변경이 되지 않는 정보를 전달
+  gchar *caminfo_msg;
   caminfo_msg = g_strdup_printf(camera_cam_info_template, "gstream_main", GSTREAM_MAIN_VER, "0.0.1");
 
-  glog_trace ("Register id %s with server\n", g_config.camera_id);
+  glog_trace("Register id %s with server\n", g_config.camera_id);
   send_json_info("register", caminfo_msg);
-  g_free (caminfo_msg); 
+  g_free(caminfo_msg);
 
   return TRUE;
 }
-
 
 int get_temp(int index)
 {
@@ -471,9 +483,10 @@ int get_temp(int index)
   int temperature;
 
   tempFile = fopen(path, "r");
-  if (tempFile == NULL) {
-      glog_error( "fail read [%s] failed.\n", path);
-      return 0; // 에러 코드 반환
+  if (tempFile == NULL)
+  {
+    glog_error("fail read [%s] failed.\n", path);
+    return 0; // 에러 코드 반환
   }
 
   fscanf(tempFile, "%d", &temperature);
@@ -481,101 +494,114 @@ int get_temp(int index)
   return temperature;
 }
 
-
-int get_storage_usage() 
+int get_storage_usage()
 {
-    char command[100];
-    char folderPath[] = "/dev/nvme0n1";  
+  char command[100];
+  char folderPath[] = "/dev/nvme0n1";
 
-    // df 명령어 실행을 위한 명령어 문자열 생성
-    snprintf(command, sizeof(command), "df -h %s", folderPath);
+  // df 명령어 실행을 위한 명령어 문자열 생성
+  snprintf(command, sizeof(command), "df -h %s", folderPath);
 
-    // popen을 사용하여 명령어 실행
-    FILE *dfOutput = popen(command, "r");
-    if (dfOutput == NULL) {
-        glog_error("command [%s] error \n", command);
-        return EXIT_FAILURE;
-    }
+  // popen을 사용하여 명령어 실행
+  FILE *dfOutput = popen(command, "r");
+  if (dfOutput == NULL)
+  {
+    glog_error("command [%s] error \n", command);
+    return EXIT_FAILURE;
+  }
 
-    // 결과 읽기
-    char buffer[128];
-    int index = 0;
-    int usagePercentage = 0;
-    while (fgets(buffer, sizeof(buffer), dfOutput) != NULL) {
-      if(index > 1) {
-        char *token = strtok(buffer, " %");
-        // 반복문을 통해 % 값 찾기
-        while (token != NULL) {
-            if (strcmp(token, "%") == 0) {
-                // %를 찾았을 때 다음 토큰이 % 값임
-                token = strtok(NULL, " ");
-                if (token != NULL) {
-                    // % 값 출력
-                    //printf("Usage percentage: %s\n", token);
-                    // 혹은 정수로 변환하여 사용하려면 atoi 함수를 사용할 수 있습니다.
-                    usagePercentage = atoi(token);
-                    break;
-                }
-            }
-            token = strtok(NULL, " %");
+  // 결과 읽기
+  char buffer[128];
+  int index = 0;
+  int usagePercentage = 0;
+  while (fgets(buffer, sizeof(buffer), dfOutput) != NULL)
+  {
+    if (index > 1)
+    {
+      char *token = strtok(buffer, " %");
+      // 반복문을 통해 % 값 찾기
+      while (token != NULL)
+      {
+        if (strcmp(token, "%") == 0)
+        {
+          // %를 찾았을 때 다음 토큰이 % 값임
+          token = strtok(NULL, " ");
+          if (token != NULL)
+          {
+            // % 값 출력
+            // printf("Usage percentage: %s\n", token);
+            // 혹은 정수로 변환하여 사용하려면 atoi 함수를 사용할 수 있습니다.
+            usagePercentage = atoi(token);
+            break;
+          }
         }
-        break;
+        token = strtok(NULL, " %");
       }
-      index = index + 1;
+      break;
     }
+    index = index + 1;
+  }
 
-    // popen으로 실행한 명령어 닫기
-    int status = pclose(dfOutput);
-    if (status == -1) {
-        glog_error("pclose");
-        return EXIT_FAILURE;
-    } else if (WIFEXITED(status)) {
-        if (WEXITSTATUS(status) != 0) {
-            glog_error("Command failed with exit status %d\n", WEXITSTATUS(status));
-            return EXIT_FAILURE;
-        }
-    } else {
-        glog_error("Command did not terminate normally\n");
-        return EXIT_FAILURE;
+  // popen으로 실행한 명령어 닫기
+  int status = pclose(dfOutput);
+  if (status == -1)
+  {
+    glog_error("pclose");
+    return EXIT_FAILURE;
+  }
+  else if (WIFEXITED(status))
+  {
+    if (WEXITSTATUS(status) != 0)
+    {
+      glog_error("Command failed with exit status %d\n", WEXITSTATUS(status));
+      return EXIT_FAILURE;
     }
+  }
+  else
+  {
+    glog_error("Command did not terminate normally\n");
+    return EXIT_FAILURE;
+  }
 
-    return usagePercentage;
+  return usagePercentage;
 }
 
-
-static gchar* camera_cam_status_template = "{\"rec_status\": \"%s\", \"rec_usage\": %d, \"cpu_temp\": %d, \"gpu_temp\": %d, \
+static gchar *camera_cam_status_template = "{\"rec_status\": \"%s\", \"rec_usage\": %d, \"cpu_temp\": %d, \"gpu_temp\": %d, \
                                         \"rgb_snaphot\": \"%s\", \"thermal_snaphot\": \"%s\" }";
 void send_camera_info_to_server()
 {
   pthread_mutex_lock(&g_send_info_mutex);
 
-  if(g_wait_reply_cnt > MAX_WAIT_REPLY_CNT){
-    cleanup_and_retry_connect ("Unknown Broken Connection", APP_STATE_ERROR_TIMEOUT);
+  if (g_wait_reply_cnt > MAX_WAIT_REPLY_CNT)
+  {
+    cleanup_and_retry_connect("Unknown Broken Connection", APP_STATE_ERROR_TIMEOUT);
     terminate_program();
     goto exit_func;
   }
 
   gchar *RGB_base64_data = image_to_base64("RGB");
-  if(RGB_base64_data == NULL){
+  if (RGB_base64_data == NULL)
+  {
     goto exit_func;
   }
 
   gchar *Thermal_base64_data = image_to_base64("Thermal");
-  if(Thermal_base64_data == NULL){
+  if (Thermal_base64_data == NULL)
+  {
     free(RGB_base64_data);
     goto exit_func;
   }
 
   gchar *msg;
-  msg = g_strdup_printf (camera_cam_status_template, g_setting.record_status?"On":"Off" , get_storage_usage(),
-            get_temp(0) , get_temp(1), RGB_base64_data, Thermal_base64_data);
- 
+  msg = g_strdup_printf(camera_cam_status_template, g_setting.record_status ? "On" : "Off", get_storage_usage(),
+                        get_temp(0), get_temp(1), RGB_base64_data, Thermal_base64_data);
+
   send_json_info("camstatus", msg);
   g_wait_reply_cnt = g_wait_reply_cnt + 1;
-  if(g_wait_reply_cnt > 1) 
-    glog_trace ("send_camera_info_to_server g_wait_reply_cnt=%d\n", g_wait_reply_cnt);
-  
-  g_free (msg); 
+  if (g_wait_reply_cnt > 1)
+    glog_trace("send_camera_info_to_server g_wait_reply_cnt=%d\n", g_wait_reply_cnt);
+
+  g_free(msg);
   free(RGB_base64_data);
   free(Thermal_base64_data);
 
@@ -588,17 +614,20 @@ void *process_heartbit(void *arg)
   static int count = 0;
 
   glog_trace("start heartbit process timeout %d \n", g_heartbit_timeout);
-  while(1){
-    usleep(g_heartbit_timeout*1000);
+  while (1)
+  {
+    usleep(g_heartbit_timeout * 1000);
 
     // Loop 가 시작하고 동작 시킨다.
-    if(!g_firsttime_call){
+    if (!g_firsttime_call)
+    {
       apply_setting();
       g_firsttime_call = TRUE;
     }
 
-    if(g_app_state == SERVER_REGISTERING)      //if communication is normally set with signaling server, then state is SERVER_REGISTERING
-      if (++count == 3) {                      //per 15 seconds
+    if (g_app_state == SERVER_REGISTERING) // if communication is normally set with signaling server, then state is SERVER_REGISTERING
+      if (++count == 3)
+      { // per 15 seconds
         count = 0;
         send_camera_info_to_server();
       }
@@ -607,133 +636,139 @@ void *process_heartbit(void *arg)
   return 0;
 }
 
-
 void start_heartbit(int timeout)
 {
   pthread_create(&g_heartbit_tid, NULL, process_heartbit, NULL);
   pthread_create(&g_api_server_tid, NULL, process_api_server, NULL);
 }
 
-void  kill_heartbit()
+void kill_heartbit()
 {
-  if(g_heartbit_tid){
+  if (g_heartbit_tid)
+  {
     pthread_kill(g_heartbit_tid, 0);
-    g_heartbit_tid = 0; 
+    g_heartbit_tid = 0;
   }
 
-  if(g_api_server_tid){
+  if (g_api_server_tid)
+  {
     pthread_kill(g_api_server_tid, 0);
-    g_api_server_tid = 0; 
+    g_api_server_tid = 0;
   }
 }
 
-
-static gchar* json_msssage_template_string = "{\
+static gchar *json_msssage_template_string = "{\
    \"peerType\": \"camera\",\
    \"action\": \"%s\",\
    \"message\": {\"peer_id\": \"%s\", \"%s\":\"%s\"} \
 }";
 
-static gchar* json_msssage_template_string_json = "{\
+static gchar *json_msssage_template_string_json = "{\
    \"peerType\": \"camera\",\
    \"action\": \"%s\",\
    \"message\": {\"peer_id\": \"%s\", \"%s\":%s} \
 }";
 
-
-void  send_image_to_peer(const gchar * peer_id, const gchar *source)
+void send_image_to_peer(const gchar *peer_id, const gchar *source)
 {
   gchar *base64_data = image_to_base64(source);
-  if(base64_data == NULL){
-    return ;
+  if (base64_data == NULL)
+  {
+    return;
   }
 
   gchar *msg;
-  msg = g_strdup_printf (json_msssage_template_string, "send_user", peer_id, "image" ,base64_data);
+  msg = g_strdup_printf(json_msssage_template_string, "send_user", peer_id, "image", base64_data);
   send_msg_server(msg);
 
-  free(msg);  
-	free(base64_data);
+  free(msg);
+  free(base64_data);
 }
 
-
-static gchar* camera_cam_setting_template = "{\"color_palette\": %d, \"record_status\": %d, \"analsys_status\": %d, \
+static gchar *camera_cam_setting_template = "{\"color_palette\": %d, \"record_status\": %d, \"analsys_status\": %d, \
                                               \"ptz_auto_seq\": \"%s\", \"ptz_preset\": \"%s\", \"auto_ptz_preset\": \
                                                \"%s\", \"auto_ptz_mode\": %d , \"enable_event_notify\": %d}";
-void  send_setting_to_peer(const gchar * peer_id)
+void send_setting_to_peer(const gchar *peer_id)
 {
   gchar *setting_json;
   gchar *msg;
-  char ptz_status[MAX_PTZ_PRESET+1] ={0};
-  for (int i = 0 ; i < MAX_PTZ_PRESET ; i++){
-    ptz_status[i] = (g_setting.ptz_preset[i][0] == 0) ? '0' : '1' ;
+  char ptz_status[MAX_PTZ_PRESET + 1] = {0};
+  for (int i = 0; i < MAX_PTZ_PRESET; i++)
+  {
+    ptz_status[i] = (g_setting.ptz_preset[i][0] == 0) ? '0' : '1';
   }
 
-  char auto_ptz_status[MAX_PTZ_PRESET+1] ={0};
-  for (int i = 0 ; i < MAX_PTZ_PRESET ; i++){
-    auto_ptz_status[i] = (g_setting.auto_ptz_preset[i][0] == 0) ? '0' : '1' ;
+  char auto_ptz_status[MAX_PTZ_PRESET + 1] = {0};
+  for (int i = 0; i < MAX_PTZ_PRESET; i++)
+  {
+    auto_ptz_status[i] = (g_setting.auto_ptz_preset[i][0] == 0) ? '0' : '1';
   }
 
-  setting_json = g_strdup_printf (camera_cam_setting_template, g_setting.color_pallet, g_setting.record_status, g_setting.analysis_status,
-    g_setting.auto_ptz_seq, ptz_status, auto_ptz_status, is_work_auto_ptz(), g_setting.enable_event_notify);
+  setting_json = g_strdup_printf(camera_cam_setting_template, g_setting.color_pallet, g_setting.record_status, g_setting.analysis_status,
+                                 g_setting.auto_ptz_seq, ptz_status, auto_ptz_status, is_work_auto_ptz(), g_setting.enable_event_notify);
 
-  msg = g_strdup_printf (json_msssage_template_string_json, "send_user", peer_id, "setting" ,setting_json);
+  msg = g_strdup_printf(json_msssage_template_string_json, "send_user", peer_id, "setting", setting_json);
   send_msg_server(msg);
 
-  free(msg);  
+  free(msg);
   free(setting_json);
 }
 
-
-void  send_rec_url_to_peer(const gchar * peer_id, const gchar *check_str)
+void send_rec_url_to_peer(const gchar *peer_id, const gchar *check_str)
 {
   gchar *msg;
-  msg = g_strdup_printf (json_msssage_template_string, "send_user", peer_id, "rec_url" ,g_config.http_service_ip);
+  msg = g_strdup_printf(json_msssage_template_string, "send_user", peer_id, "rec_url", g_config.http_service_ip);
   send_msg_server(msg);
-  free(msg);  
+  free(msg);
 }
 
-
-void  remove_data_path(const gchar *remve_path)
+void remove_data_path(const gchar *remve_path)
 {
   char cmd_full_remove_path[512];
   sprintf(cmd_full_remove_path, "rm -rf %s/%s", g_config.record_path, remve_path);
 
-  glog_trace (" System Command %s \n", cmd_full_remove_path);
+  glog_trace(" System Command %s \n", cmd_full_remove_path);
   execute_process(cmd_full_remove_path, FALSE);
 }
 
-
-void set_camera_dn_mode(int camera_dn_mode)     // 0 => auto, 1 => manual day, 2 => manual night mode
+void set_camera_dn_mode(int camera_dn_mode) // 0 => auto, 1 => manual day, 2 => manual night mode
 {
-  if(is_open_serial() == 0){
-    return ;
+  if (is_open_serial() == 0)
+  {
+    return;
   }
-  
-  glog_trace("camera_dn_mode [%d]\n", camera_dn_mode);      
 
-  unsigned char camera_ptz_cmd[7] = {0x96,0x00,0x66,0x42,0x01,0x02,0x41};
-  if(0 == camera_dn_mode){
+  glog_trace("camera_dn_mode [%d]\n", camera_dn_mode);
+
+  unsigned char camera_ptz_cmd[7] = {0x96, 0x00, 0x66, 0x42, 0x01, 0x02, 0x41};
+  if (0 == camera_dn_mode)
+  {
     camera_ptz_cmd[5] = 0x02;
     camera_ptz_cmd[6] = 0x41;
-  } else if(1 == camera_dn_mode){
+  }
+  else if (1 == camera_dn_mode)
+  {
     camera_ptz_cmd[5] = 0x00;
     camera_ptz_cmd[6] = 0x3f;
-  } else if(2 == camera_dn_mode){
+  }
+  else if (2 == camera_dn_mode)
+  {
     camera_ptz_cmd[5] = 0x01;
     camera_ptz_cmd[6] = 0x40;
-  } else {
+  }
+  else
+  {
     glog_error("invalied camera mode [%d] \n", camera_dn_mode);
-    return ;
+    return;
   }
   write_serial(camera_ptz_cmd, 7);
 }
 
-
 void get_cur_dir(char *cwd, int size)
 {
-  if (getcwd(cwd, size) == NULL) {
-      perror("getcwd() error");
+  if (getcwd(cwd, size) == NULL)
+  {
+    perror("getcwd() error");
   }
 }
 
@@ -747,355 +782,438 @@ void get_ranch_setting_path(char *fname)
 }
 #endif
 
-gboolean process_message_cmd(gJSONObj* jsonObj)
+gboolean process_message_cmd(gJSONObj *jsonObj)
 {
   JsonNode *node;
-  
-  node = json_object_get_member (jsonObj->object, "message");
-  if (!node){
-    glog_trace ("Can not get message Node\n");
+
+  node = json_object_get_member(jsonObj->object, "message");
+  if (!node)
+  {
+    glog_trace("Can not get message Node\n");
     return FALSE;
   }
 
-  JsonObject *object = json_node_get_object (node);
-  if (json_object_has_member(object, "ptz")){
+  JsonObject *object = json_node_get_object(node);
+  if (json_object_has_member(object, "ptz"))
+  {
     glog_trace("ptz\n");
-    const gchar* ptz_ctl_msg;
-    if(!cockpit_json_get_string(object, "ptz", NULL, &ptz_ctl_msg, FALSE)){
-      glog_trace ("Can not get message PTZ Command\n");
+    const gchar *ptz_ctl_msg;
+    if (!cockpit_json_get_string(object, "ptz", NULL, &ptz_ctl_msg, FALSE))
+    {
+      glog_trace("Can not get message PTZ Command\n");
       return FALSE;
     }
-    send_ptz_serial_data(ptz_ctl_msg); 
-
-  } else if(json_object_has_member(object, "ptz_move")){                   //LJH, 242826
+    send_ptz_serial_data(ptz_ctl_msg);
+  }
+  else if (json_object_has_member(object, "ptz_move"))
+  { // LJH, 242826
     glog_trace("ptz_move\n");
-    const gchar* msg;
-    if(!cockpit_json_get_string(object, "ptz_move", NULL, &msg, FALSE)){
-      glog_trace ("Can not get message PTZ Move Command\n");
+    const gchar *msg;
+    if (!cockpit_json_get_string(object, "ptz_move", NULL, &msg, FALSE))
+    {
+      glog_trace("Can not get message PTZ Move Command\n");
       return FALSE;
     }
     send_ptz_move_serial_data(msg);
+  }
+  else if (json_object_has_member(object, "record"))
+  {
+    const gchar *on_off;
 
-  } else if(json_object_has_member(object, "record")){
-    const gchar* on_off;
-
-    if(!cockpit_json_get_string(object, "record", NULL, &on_off, FALSE)){
-      glog_trace ("Can not get message Record Command\n");
+    if (!cockpit_json_get_string(object, "record", NULL, &on_off, FALSE))
+    {
+      glog_trace("Can not get message Record Command\n");
       return FALSE;
     }
     glog_trace("record on_off=%s\n", on_off);
     int status = 0;
-    if(strcmp(on_off, "On") == 0){
-        start_process_rec();
-        status = 1;
-    } else {
-       stop_process_rec();
+    if (strcmp(on_off, "On") == 0)
+    {
+      start_process_rec();
+      status = 1;
+    }
+    else
+    {
+      stop_process_rec();
     }
 
     //@@TODO : 실제 record가 시작 되었는지 확인이 필요.
     g_setting.record_status = status;
     update_setting(g_config.device_setting_path, &g_setting);
-  } else if(json_object_has_member(object, "analysis")){
+  }
+  else if (json_object_has_member(object, "analysis"))
+  {
     glog_trace("analysis\n");
-    const gchar* on_off;
-    if(!cockpit_json_get_string(object, "analysis", NULL, &on_off, FALSE)){
-      glog_trace ("Can not get message Analysis Command\n");
+    const gchar *on_off;
+    if (!cockpit_json_get_string(object, "analysis", NULL, &on_off, FALSE))
+    {
+      glog_trace("Can not get message Analysis Command\n");
       return FALSE;
     }
     glog_trace("analysis on_off=%s\n", on_off);
-    
-    if(strcmp(on_off, "On") == 0){
-        set_process_analysis(TRUE);
-        g_setting.analysis_status = 1;
-    } else {
-       set_process_analysis(FALSE);
-       g_setting.analysis_status = 0;
+
+    if (strcmp(on_off, "On") == 0)
+    {
+      set_process_analysis(TRUE);
+      g_setting.analysis_status = 1;
     }
-    
+    else
+    {
+      set_process_analysis(FALSE);
+      g_setting.analysis_status = 0;
+    }
+
     g_frame_count[RGB_CAM] = 0;
     g_frame_count[THERMAL_CAM] = 0;
-    
+
     update_setting(g_config.device_setting_path, &g_setting);
-  } else if(json_object_has_member(object, "color_palette")){
+  }
+  else if (json_object_has_member(object, "color_palette"))
+  {
     glog_trace("color_palette\n");
-    const gchar* palette_id;
-    if(!cockpit_json_get_string(object, "color_palette", NULL, &palette_id, FALSE)){
-      glog_trace ("Can not get message Analysis Command\n");
+    const gchar *palette_id;
+    if (!cockpit_json_get_string(object, "color_palette", NULL, &palette_id, FALSE))
+    {
+      glog_trace("Can not get message Analysis Command\n");
       return FALSE;
     }
 
-    if (palette_id[0] < '0' || palette_id[0] > '9'){
-      glog_trace ("Invalied palette  id %c \n", palette_id[0]);
+    if (palette_id[0] < '0' || palette_id[0] > '9')
+    {
+      glog_trace("Invalied palette  id %c \n", palette_id[0]);
       return FALSE;
     }
     glog_trace("palette_id=%c\n", palette_id[0]);
-    
+
     char process_cmd[256];
     sprintf(process_cmd, "/home/nvidia/webrtc/cam_ctl %c", palette_id[0]);
     execute_process(process_cmd, FALSE);
 
     g_setting.color_pallet = palette_id[0] - '0';
     update_setting(g_config.device_setting_path, &g_setting);
-  } else if(json_object_has_member(object, "send_event")){          //LJH, this is from test page
+  }
+  else if (json_object_has_member(object, "send_event"))
+  { // LJH, this is from test page
     glog_trace("send_event\n");
-    const gchar* str_event;
-    if(!cockpit_json_get_string(object, "send_event", NULL, &str_event, FALSE)){
-      glog_trace ("Can not get message Analysis Command\n");
+    const gchar *str_event;
+    if (!cockpit_json_get_string(object, "send_event", NULL, &str_event, FALSE))
+    {
+      glog_trace("Can not get message Analysis Command\n");
       return FALSE;
     }
     send_event_to_recorder_simple(1, 0);
-  } else if(json_object_has_member(object, "del_ptz_pos")){
+  }
+  else if (json_object_has_member(object, "del_ptz_pos"))
+  {
     glog_trace("del_ptz_pos\n");
-    const gchar* str_id;
-    if(!cockpit_json_get_string(object, "del_ptz_pos", NULL, &str_id, FALSE)){
-      glog_trace ("Can not get message PTZ Pos Command\n");
+    const gchar *str_id;
+    if (!cockpit_json_get_string(object, "del_ptz_pos", NULL, &str_id, FALSE))
+    {
+      glog_trace("Can not get message PTZ Pos Command\n");
       return FALSE;
     }
 
     int id = atoi(str_id);
-    int mode = id/16;
-    id = id%16;
-    if(id >= MAX_PTZ_PRESET){
-      glog_trace ("Can not invailied PTZ Pos %d\n", id);
-      return FALSE;        
+    int mode = id / 16;
+    id = id % 16;
+    if (id >= MAX_PTZ_PRESET)
+    {
+      glog_trace("Can not invailied PTZ Pos %d\n", id);
+      return FALSE;
     }
     glog_trace("mode=%d, id=%d\n", mode, id);
-    char* ptz_preset = (mode == 0) ? g_setting.ptz_preset[id] : g_setting.auto_ptz_preset[id];
-    memset(&ptz_preset[0], 0, PTZ_POS_SIZE);  
+    char *ptz_preset = (mode == 0) ? g_setting.ptz_preset[id] : g_setting.auto_ptz_preset[id];
+    memset(&ptz_preset[0], 0, PTZ_POS_SIZE);
     update_setting(g_config.device_setting_path, &g_setting);
-  } else if(json_object_has_member(object, "set_ptz_pos")){
+  }
+  else if (json_object_has_member(object, "set_ptz_pos"))
+  {
     glog_trace("set_ptz_pos\n");
-    const gchar* str_id;
-    if(!cockpit_json_get_string(object, "set_ptz_pos", NULL, &str_id, FALSE)){
-      glog_trace ("Can not get message PTZ Pos Command\n");
+    const gchar *str_id;
+    if (!cockpit_json_get_string(object, "set_ptz_pos", NULL, &str_id, FALSE))
+    {
+      glog_trace("Can not get message PTZ Pos Command\n");
       return FALSE;
     }
- 
+
     int id = atoi(str_id);
-    int mode = id/16;
-    id = id%16;
-    if(id >= MAX_PTZ_PRESET){
-      glog_trace ("Can not invailied PTZ Pos %d\n", id);
-      return FALSE;        
+    int mode = id / 16;
+    id = id % 16;
+    if (id >= MAX_PTZ_PRESET)
+    {
+      glog_trace("Can not invailied PTZ Pos %d\n", id);
+      return FALSE;
     }
     glog_trace("mode=%d, id=%d\n", mode, id);
 
-    char* ptz_preset = (mode == 0) ? g_setting.ptz_preset[id] : g_setting.auto_ptz_preset[id];
-    unsigned char read_data[32];  
-    if(set_ptz_pos(id, read_data, mode) == 0){
+    char *ptz_preset = (mode == 0) ? g_setting.ptz_preset[id] : g_setting.auto_ptz_preset[id];
+    unsigned char read_data[32];
+    if (set_ptz_pos(id, read_data, mode) == 0)
+    {
       ptz_preset[0] = 1;
       memcpy(&ptz_preset[1], &read_data[5], 10);
       update_setting(g_config.device_setting_path, &g_setting);
     }
-  } else if(json_object_has_member(object, "move_ptz_pos")){
+  }
+  else if (json_object_has_member(object, "move_ptz_pos"))
+  {
     glog_trace("move_ptz_pos\n");
-    const gchar* str_id;
-    if(!cockpit_json_get_string(object, "move_ptz_pos", NULL, &str_id, FALSE)){
-      glog_trace ("Can not get message Analysis Command\n");
+    const gchar *str_id;
+    if (!cockpit_json_get_string(object, "move_ptz_pos", NULL, &str_id, FALSE))
+    {
+      glog_trace("Can not get message Analysis Command\n");
       return FALSE;
     }
 
     int id = atoi(str_id);
-    int mode = id/16;
-    id = id%16;
-    if(id >= MAX_PTZ_PRESET){
-      glog_trace ("Can not invailied PTZ Pos [%d]\n", id);
-      return FALSE;        
+    int mode = id / 16;
+    id = id % 16;
+    if (id >= MAX_PTZ_PRESET)
+    {
+      glog_trace("Can not invailied PTZ Pos [%d]\n", id);
+      return FALSE;
     }
     move_ptz_pos(id, mode);
     glog_trace("mode=%d, id=%d\n", mode, id);
-  } else if(json_object_has_member(object, "set_auto_ptz_pos")){
+  }
+  else if (json_object_has_member(object, "set_auto_ptz_pos"))
+  {
     glog_trace("set_auto_ptz_pos\n");
-    const gchar* str_id;
-    if(!cockpit_json_get_string(object, "set_auto_ptz_pos", NULL, &str_id, FALSE)){
-      glog_trace ("Can not get message Auto PTZ Pos Command\n");
+    const gchar *str_id;
+    if (!cockpit_json_get_string(object, "set_auto_ptz_pos", NULL, &str_id, FALSE))
+    {
+      glog_trace("Can not get message Auto PTZ Pos Command\n");
       return FALSE;
     }
 
     int id = atoi(str_id);
     glog_trace("id=%d\n", id);
-    if(id >= MAX_PTZ_PRESET){
-      glog_trace ("Can not invailied Auto PTZ Pos %d\n", id);
-      return FALSE;        
+    if (id >= MAX_PTZ_PRESET)
+    {
+      glog_trace("Can not invailied Auto PTZ Pos %d\n", id);
+      return FALSE;
     }
-    unsigned char read_data[32];  
-    if(set_ptz_pos(id, read_data, 1) == 0){
+    unsigned char read_data[32];
+    if (set_ptz_pos(id, read_data, 1) == 0)
+    {
       g_setting.auto_ptz_preset[id][0] = 1;
       memcpy(&g_setting.auto_ptz_preset[id][1], &read_data[5], 10);
       update_setting(g_config.device_setting_path, &g_setting);
     }
-  } else if(json_object_has_member(object, "auto_move_ptz")){
+  }
+  else if (json_object_has_member(object, "auto_move_ptz"))
+  {
     glog_trace("auto_move_ptz\n");
-    const gchar* move_seq;
+    const gchar *move_seq;
     int ret = 0;
-    if(!cockpit_json_get_string(object, "auto_move_ptz", NULL, &move_seq, FALSE)){
-      glog_trace ("Can not get message Analysis Command\n");
+    if (!cockpit_json_get_string(object, "auto_move_ptz", NULL, &move_seq, FALSE))
+    {
+      glog_trace("Can not get message Analysis Command\n");
       return FALSE;
     }
-    glog_trace("auto_move_ptz:%s (value len=%d)\n", move_seq, strlen(move_seq));                
-    if((ret = auto_move_ptz(move_seq)) == 0) {
-      strcpy(g_setting.auto_ptz_seq, move_seq);                                                 //LJH, moved position
+    glog_trace("auto_move_ptz:%s (value len=%d)\n", move_seq, strlen(move_seq));
+    if ((ret = auto_move_ptz(move_seq)) == 0)
+    {
+      strcpy(g_setting.auto_ptz_seq, move_seq); // LJH, moved position
       update_setting(g_config.device_setting_path, &g_setting);
     }
-    else {
+    else
+    {
       glog_trace("auto_move_ptz() returned %d\n", ret);
-      if (strlen(move_seq) == 0) {
+      if (strlen(move_seq) == 0)
+      {
         g_setting.auto_ptz_seq[0] = 0;
         update_setting(g_config.device_setting_path, &g_setting);
       }
     }
-  } else if(json_object_has_member(object, "request_image")){
+  }
+  else if (json_object_has_member(object, "request_image"))
+  {
     glog_trace("request_image\n");
-    const gchar* peer_id;
-    const gchar* source;
-    if(!get_json_data_from_message(jsonObj, "peer_id", &peer_id)){
-      glog_trace ("Can not get peer_id in request_image\n");
+    const gchar *peer_id;
+    const gchar *source;
+    if (!get_json_data_from_message(jsonObj, "peer_id", &peer_id))
+    {
+      glog_trace("Can not get peer_id in request_image\n");
       return FALSE;
     }
-    if(!cockpit_json_get_string(object, "request_image", NULL, &source, FALSE)){
-      glog_trace ("Can not get source in request_image\n");
+    if (!cockpit_json_get_string(object, "request_image", NULL, &source, FALSE))
+    {
+      glog_trace("Can not get source in request_image\n");
       return FALSE;
     }
     glog_trace("peer_id=%s source=%s\n", peer_id, source);
     send_image_to_peer(peer_id, source);
-
-  } else if(json_object_has_member(object, "request_setting")){
+  }
+  else if (json_object_has_member(object, "request_setting"))
+  {
     glog_trace("request_setting\n");
-    const gchar* peer_id;
-    if(!get_json_data_from_message(jsonObj, "peer_id", &peer_id)){
-      glog_trace ("Can not get peer_id in request_setting\n");
+    const gchar *peer_id;
+    if (!get_json_data_from_message(jsonObj, "peer_id", &peer_id))
+    {
+      glog_trace("Can not get peer_id in request_setting\n");
       return FALSE;
     }
     send_setting_to_peer(peer_id);
-  } else if(json_object_has_member(object, "request_rec_url")){
+  }
+  else if (json_object_has_member(object, "request_rec_url"))
+  {
     glog_trace("request_rec_url\n");
-    const gchar* peer_id;
-    const gchar* check_str;
-    if(!get_json_data_from_message(jsonObj, "peer_id", &peer_id)){
-      glog_trace ("Can not get peer_id in request_rec_url\n");
+    const gchar *peer_id;
+    const gchar *check_str;
+    if (!get_json_data_from_message(jsonObj, "peer_id", &peer_id))
+    {
+      glog_trace("Can not get peer_id in request_rec_url\n");
       return FALSE;
     }
 
-    if(!cockpit_json_get_string(object, "request_rec_url", NULL, &check_str, FALSE)){
-      glog_trace ("Can not get check_str in request_rec_url\n");
+    if (!cockpit_json_get_string(object, "request_rec_url", NULL, &check_str, FALSE))
+    {
+      glog_trace("Can not get check_str in request_rec_url\n");
       return FALSE;
     }
     glog_trace("peer_id=%s check_str=%s\n", peer_id, check_str);
     send_rec_url_to_peer(peer_id, check_str);
-
-  } else if(json_object_has_member(object, "enable_event_notify")){
+  }
+  else if (json_object_has_member(object, "enable_event_notify"))
+  {
     glog_trace("enable_event_notify\n");
-    const gchar* on_off;
-    if(!cockpit_json_get_string(object, "enable_event_notify", NULL, &on_off, FALSE)){
-      glog_trace ("Can not get check_str in enable_event_notify\n");
+    const gchar *on_off;
+    if (!cockpit_json_get_string(object, "enable_event_notify", NULL, &on_off, FALSE))
+    {
+      glog_trace("Can not get check_str in enable_event_notify\n");
       return FALSE;
     }
 
     glog_trace("enable_event_notify on_off=%s\n", on_off);
-    if(strcmp(on_off, "On") == 0){
-        g_setting.enable_event_notify = 1;
-    } else {
-       g_setting.enable_event_notify = 0;
+    if (strcmp(on_off, "On") == 0)
+    {
+      g_setting.enable_event_notify = 1;
+    }
+    else
+    {
+      g_setting.enable_event_notify = 0;
     }
 
     update_setting(g_config.device_setting_path, &g_setting);
-
-  } else if(json_object_has_member(object, "request_reset")){
+  }
+  else if (json_object_has_member(object, "request_reset"))
+  {
     glog_trace("reset_request\n");
     execute_process("reboot", FALSE);
-  } else if(json_object_has_member(object, "request_factory_default")){
+  }
+  else if (json_object_has_member(object, "request_factory_default"))
+  {
     glog_trace("request_factory_default\n");
     execute_process("./factory_default.sh", FALSE);
-  } else if(json_object_has_member(object, "request_remove_path")){
+  }
+  else if (json_object_has_member(object, "request_remove_path"))
+  {
     glog_trace("request_remove_path\n");
-    const gchar* path;
-    if(!cockpit_json_get_string(object, "request_remove_path", NULL, &path, FALSE)){
-      glog_trace ("Can not get path in request_remove_path\n");
+    const gchar *path;
+    if (!cockpit_json_get_string(object, "request_remove_path", NULL, &path, FALSE))
+    {
+      glog_trace("Can not get path in request_remove_path\n");
       return FALSE;
     }
     glog_trace("request_remove_path path [%s] \n", path);
     remove_data_path(path);
 
-    //execute_process("./factory_default.sh", FALSE);
-  } else if(json_object_has_member(object, "camera_dn_mode")){
+    // execute_process("./factory_default.sh", FALSE);
+  }
+  else if (json_object_has_member(object, "camera_dn_mode"))
+  {
     glog_trace("camera_dn_mode\n");
-    const gchar* mode_id;
-    if(!cockpit_json_get_string(object, "camera_dn_mode", NULL, &mode_id, FALSE)){
-      glog_trace ("Can not get message Analysis Command\n");
+    const gchar *mode_id;
+    if (!cockpit_json_get_string(object, "camera_dn_mode", NULL, &mode_id, FALSE))
+    {
+      glog_trace("Can not get message Analysis Command\n");
       return FALSE;
     }
 
-    if (mode_id[0] < '0' || mode_id[0] > '2'){
-      glog_trace ("Invalied camera mode %c \n", mode_id[0]);
+    if (mode_id[0] < '0' || mode_id[0] > '2')
+    {
+      glog_trace("Invalied camera mode %c \n", mode_id[0]);
       return FALSE;
     }
     g_setting.camera_dn_mode = mode_id[0] - '0';
     glog_trace("camera_dn_mode=%d\n", g_setting.camera_dn_mode);
     set_camera_dn_mode(g_setting.camera_dn_mode);
     update_setting(g_config.device_setting_path, &g_setting);
-  } 
+  }
 
 #if MINDULE_INCLUDE
 
-  else if(json_object_has_member(object, "set_ranch_pos")){
-    glog_trace ("set_ranch_pos\n");
+  else if (json_object_has_member(object, "set_ranch_pos"))
+  {
+    glog_trace("set_ranch_pos\n");
 
-    const gchar* str_index;
-    if(!cockpit_json_get_string(object, "set_ranch_pos", NULL, &str_index, FALSE)){
-      glog_trace ("Can not get message Ranch PTZ Pos Command\n");
+    const gchar *str_index;
+    if (!cockpit_json_get_string(object, "set_ranch_pos", NULL, &str_index, FALSE))
+    {
+      glog_trace("Can not get message Ranch PTZ Pos Command\n");
       return FALSE;
     }
     int index = atoi(str_index);
     glog_trace("received index=%d\n", index);
-    if(index >= MAX_RANCH_POS){
-      glog_trace ("ranch pos index(=%d) is out of range\n", index);
-      return FALSE;        
+    if (index >= MAX_RANCH_POS)
+    {
+      glog_trace("ranch pos index(=%d) is out of range\n", index);
+      return FALSE;
     }
 
-    unsigned char read_data[32];  
-    if(set_ranch_pos(index, read_data) == 0){
+    unsigned char read_data[32];
+    if (set_ranch_pos(index, read_data) == 0)
+    {
       g_ranch_setting.ranch_pos[index][0] = 1;
       memcpy(&g_ranch_setting.ranch_pos[index][1], &read_data[5], 10);
       char fname[100];
       get_ranch_setting_path(fname);
       update_ranch_setting(fname, &g_ranch_setting);
     }
-  } 
-  else if(json_object_has_member(object, "move_ranch_pos")){
-    glog_trace ("move_ranch_pos\n");
+  }
+  else if (json_object_has_member(object, "move_ranch_pos"))
+  {
+    glog_trace("move_ranch_pos\n");
 
-    const gchar* str_index;
-    if(!cockpit_json_get_string(object, "move_ranch_pos", NULL, &str_index, FALSE)){
-      glog_trace ("Can not get message Ranch PTZ Pos Command\n");
+    const gchar *str_index;
+    if (!cockpit_json_get_string(object, "move_ranch_pos", NULL, &str_index, FALSE))
+    {
+      glog_trace("Can not get message Ranch PTZ Pos Command\n");
       return FALSE;
     }
     int index = atoi(str_index);
     glog_trace("received index=%d\n", index);
-    if(index >= MAX_RANCH_POS){
-      glog_trace ("ranch pos index(=%d) is out of range\n", index);
-      return FALSE;        
+    if (index >= MAX_RANCH_POS)
+    {
+      glog_trace("ranch pos index(=%d) is out of range\n", index);
+      return FALSE;
     }
 
-    if(move_ranch_pos(index) != 0){
-      glog_trace ("ranch move index(=%d) failed\n", index);
+    if (move_ranch_pos(index) != 0)
+    {
+      glog_trace("ranch move index(=%d) failed\n", index);
     }
+  }
+  else if (json_object_has_member(object, "del_ranch_pos"))
+  {
+    glog_trace("del_ranch_pos\n");
 
-  } 
-  else if(json_object_has_member(object, "del_ranch_pos")){
-    glog_trace ("del_ranch_pos\n");
-
-    const gchar* str_index;
-    if(!cockpit_json_get_string(object, "del_ranch_pos", NULL, &str_index, FALSE)){
-      glog_trace ("Can not get message Ranch PTZ Pos Command\n");
+    const gchar *str_index;
+    if (!cockpit_json_get_string(object, "del_ranch_pos", NULL, &str_index, FALSE))
+    {
+      glog_trace("Can not get message Ranch PTZ Pos Command\n");
       return FALSE;
     }
     int index = atoi(str_index);
     glog_trace("received index=%d\n", index);
-    if(index >= MAX_RANCH_POS){
-      glog_trace ("ranch pos index(=%d) is out of range\n", index);
-      return FALSE;        
+    if (index >= MAX_RANCH_POS)
+    {
+      glog_trace("ranch pos index(=%d) is out of range\n", index);
+      return FALSE;
     }
-    if(update_ranch_pos(index, NULL, 0) == 0){
+    if (update_ranch_pos(index, NULL, 0) == 0)
+    {
       memset(&g_ranch_setting.ranch_pos[index], 0, sizeof(g_ranch_setting.ranch_pos[index]));
       char fname[100];
       get_ranch_setting_path(fname);
@@ -1105,14 +1223,14 @@ gboolean process_message_cmd(gJSONObj* jsonObj)
 
 #endif
 
-  else {
-    glog_trace ("Unknown Command.... \n");
+  else
+  {
+    glog_trace("Unknown Command.... \n");
     return FALSE;
   }
-  
+
   return TRUE;
 }
-
 
 gboolean apply_setting()
 {
@@ -1120,75 +1238,109 @@ gboolean apply_setting()
   set_process_analysis(g_setting.analysis_status);
   set_ptz_move_speed(g_setting.ptz_move_speed, g_setting.auto_ptz_move_speed);
 
-  //default position으로 이동함 
-  if(g_setting.ptz_preset[0][0]){
+  // default position으로 이동함
+  if (g_setting.ptz_preset[0][0])
+  {
     move_ptz_pos(0, 0);
   }
 
   sprintf(process_cmd, "/home/nvidia/webrtc/cam_ctl %d", g_setting.color_pallet);
   execute_process(process_cmd, FALSE);
-  if(g_setting.record_status){
+  if (g_setting.record_status)
+  {
     start_process_rec();
   }
 
   set_camera_dn_mode(g_setting.camera_dn_mode);
-  
+
   return TRUE;
 }
 
 void send_pipe_data(const gchar *str)
 {
-  if(str == NULL || strlen(str) == 0){
+  if (str == NULL || strlen(str) == 0)
+  {
     glog_error("send_pipe_data str is NULL or empty\n");
-    return ;
-  }
-
-  if(is_open_serial() == 0){
     return;
   }
 
-  if(strstr(str, "up") != NULL){
+  if (is_open_serial() == 0)
+  {
+    return;
+  }
+
+  if (strstr(str, "up") != NULL)
+  {
     unsigned char camera_ptz_cmd[12] = {0x96, 0x0, 0x14, 0x1, 0x6, 0x81, 0x1, 0x4, 0x16, 0x1, 0xFF, 0x4D};
     write_serial(camera_ptz_cmd, 12);
-  } else if(strstr(str, "down") != NULL){
+  }
+  else if (strstr(str, "down") != NULL)
+  {
     unsigned char camera_ptz_cmd1[12] = {0x96, 0x0, 0x14, 0x1, 0x6, 0x81, 0x1, 0x4, 0x16, 0x2, 0xFF, 0x4E};
     write_serial(camera_ptz_cmd1, 12);
-  } else if(strstr(str, "left") != NULL){
+  }
+  else if (strstr(str, "left") != NULL)
+  {
     unsigned char camera_ptz_cmd2[12] = {0x96, 0x0, 0x14, 0x1, 0x6, 0x81, 0x1, 0x4, 0x16, 0x4, 0xFF, 0x50};
     write_serial(camera_ptz_cmd2, 12);
-  } else if(strstr(str, "right") != NULL){
+  }
+  else if (strstr(str, "right") != NULL)
+  {
     unsigned char camera_ptz_cmd3[12] = {0x96, 0x0, 0x14, 0x1, 0x6, 0x81, 0x1, 0x4, 0x16, 0x8, 0xFF, 0x54};
-      write_serial(camera_ptz_cmd3, 12);
-  } else if(strstr(str, "enter") != NULL){
+    write_serial(camera_ptz_cmd3, 12);
+  }
+  else if (strstr(str, "enter") != NULL)
+  {
     unsigned char camera_ptz_cmd4[12] = {0x96, 0x0, 0x14, 0x1, 0x6, 0x81, 0x1, 0x4, 0x16, 0x10, 0xFF, 0x5C};
     write_serial(camera_ptz_cmd4, 12);
-  } else if(strstr(str, "zoom_init") != NULL){
+  }
+  else if (strstr(str, "zoom_init") != NULL)
+  {
     unsigned char camera_ptz_cmd5[12] = {0x96, 0x0, 0x14, 0x1, 0x6, 0x81, 0x1, 0x4, 0x19, 0x1, 0xFF, 0x50};
     glog_trace("send zoom_init command\n");
     write_serial(camera_ptz_cmd5, 12);
-  } else if(strstr(str, "ir_init") != NULL){
+  }
+  else if (strstr(str, "AF_Debug_On") != NULL)
+  {
+    unsigned char camera_ptz_cmd5[14] = {0x96, 0x00, 0x14, 0x01, 0x08, 0x81, 0x01, 0x04, 0x24, 0x31, 0x00, 0x02, 0xFF, 0x8F};
+    glog_trace("send AF_Debug_On command\n");
+    write_serial(camera_ptz_cmd5, 14);
+  }
+  else if (strstr(str, "AF_Debug_Off") != NULL)
+  {
+    unsigned char camera_ptz_cmd5[14] = {0x96, 0x00, 0x14, 0x01, 0x08, 0x81, 0x01, 0x04, 0x24, 0x31, 0x00, 0x00, 0xFF, 0x8D};
+    glog_trace("send AF_Debug_Off command\n");
+    write_serial(camera_ptz_cmd5, 14);
+  }
+  else if (strstr(str, "Focus_Position") != NULL)
+  {
+    unsigned char camera_ptz_cmd5[12] = {0x96, 0x00, 0x14, 0x01, 0x06, 0x81, 0x09, 0x04, 0x19, 0x1F, 0xFF, 0x76};
+    glog_trace("send Focus_Position command\n");
+    write_serial(camera_ptz_cmd5, 12);
+  }
+  else if (strstr(str, "ir_init") != NULL)
+  {
     unsigned char ptz_cmd1[27] = {
-        0x96, 0x00, 0x22, 0x05, 0x15, 0x01, 0x01, 0x01, 0x20, 0x30, 
-        0x40, 0x60, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 
-        0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0xB7
-    };
+        0x96, 0x00, 0x22, 0x05, 0x15, 0x01, 0x01, 0x01, 0x20, 0x30,
+        0x40, 0x60, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F,
+        0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0xB7};
 
     write_serial(ptz_cmd1, 27);
 
-    usleep(1500000); 
+    usleep(1500000);
 
     unsigned char ptz_cmd2[27] = {
-        0x96, 0x00, 0x22, 0x05, 0x15, 0x00, 0x7F, 0x7F, 0x7F, 0x7F, 
-        0x7F, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 
-        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x5C
-    };
+        0x96, 0x00, 0x22, 0x05, 0x15, 0x00, 0x7F, 0x7F, 0x7F, 0x7F,
+        0x7F, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x5C};
 
     write_serial(ptz_cmd2, 27);
 
     glog_debug("send ir_init command\n");
   }
-  else {
+  else
+  {
     glog_error("Unknown pipe data %s \n", str);
-    return ;
+    return;
   }
 }

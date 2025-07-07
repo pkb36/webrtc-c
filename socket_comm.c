@@ -43,7 +43,7 @@ void *process_socket_comm_input(void *arg)
     socklen_t len;
 
     memset(&readaddr, 0, sizeof(readaddr));
-    glog_trace("thread start %d , %d\n", pInfo->socketfd, pInfo->port);
+    // glog_trace("thread start %d , %d\n", pInfo->socketfd, pInfo->port);
 
     while (1)
     {
@@ -502,14 +502,18 @@ SOCKETINFO *init_socket_comm_client(int port)
     }
 
     SOCKETINFO *pSocketInfo = (SOCKETINFO *)malloc(sizeof(SOCKETINFO));
-    pthread_t tid;
-    pthread_create(&tid, NULL, process_socket_comm_input, (void *)pSocketInfo);
-
+    
+    // 먼저 구조체 초기화
     pSocketInfo->socketfd = sockfd;
     pSocketInfo->port = port;
-    pSocketInfo->tid = tid;
     pSocketInfo->call_fun = NULL;
     pSocketInfo->data = NULL;
+    pSocketInfo->connect = 0;  // 이것도 초기화 필요
+    
+    // 그 다음에 스레드 시작
+    pthread_t tid;
+    pthread_create(&tid, NULL, process_socket_comm_input, (void *)pSocketInfo);
+    pSocketInfo->tid = tid;
 
     return pSocketInfo;
 }
@@ -524,7 +528,7 @@ int send_data_socket_comm(SOCKETINFO *socket, const char *data, int len, int is_
     {
         sendaddr.sin_family = AF_INET;
         sendaddr.sin_port = htons(socket->port);
-        sendaddr.sin_addr.s_addr = INADDR_ANY;
+        sendaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
     }
     else
     {
@@ -542,19 +546,22 @@ void close_socket_comm(SOCKETINFO *socket)
 {
     if (socket == NULL)
         return;
-    close(socket->socketfd);
-
-    glog_trace("close_socket_comm \n ");
-    int status;
-
+    
+    glog_trace("close_socket_comm\n");
+    
+    // 1. EXIT 전송
     char szTemp[16] = "EXIT";
     send_data_socket_comm(socket, szTemp, 5, 1);
-
-    pthread_join(socket->tid, (void **)&status);
-    if (socket->tid)
-    {
-        pthread_kill(socket->tid, 0);
-    }
-
+    usleep(100000);  // 100ms 대기
+    
+    // 2. 스레드 강제 종료 (pthread_join 대신)
+    pthread_cancel(socket->tid);
+    
+    // 3. 소켓 닫기
+    close(socket->socketfd);
+    
+    // 4. 메모리 해제
     free(socket);
+    
+    glog_trace("close_socket_comm completed\n");
 }

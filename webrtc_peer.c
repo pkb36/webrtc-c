@@ -109,7 +109,7 @@ void remove_peer_from_pipeline (const gchar * peer_id)
   glog_trace("send endup peer_idx [%d]:  [%s] \n", peer_idx, g_PeerInfos[peer_idx].peer_id);
 
   int status, endpid;
-  char msg[32] = "ENDUP";
+  char msg[32] = "STOP_WEBRTC";
   send_data_socket_comm(g_PeerInfos[peer_idx].socket, msg, strlen(msg), 0);
 
   endpid=waitpid(g_PeerInfos[peer_idx].child_pid,&status,0);
@@ -192,7 +192,7 @@ gboolean add_peer_to_pipeline (const gchar * peer_id, const gchar * channel)    
 
     //wait start webrtc sender ... 
     int i = 0;
-    for (i = 0; i < 5; i++){
+    for (i = 0; i < 20; i++){
       sleep(1);
       if(g_PeerInfos[peer_idx].socket->connect == 0){
         glog_trace("Wait Client count [%d] to peer_idx[%d] to pid[%d] \n", i, peer_idx, pid); 

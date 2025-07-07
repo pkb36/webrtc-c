@@ -357,7 +357,7 @@ void *process_auto_move_ptz(void *arg)
     unsigned int cur_zoom_val = 0, prev_zoom_val = 0;
     int continue_tag = 0;
 
-    glog_trace("start auto_move_ptz[%d], analysis stay time[%d]\n ",max_index, AUTO_PTZ_MOVE_SEQ[1]);
+    // glog_trace("start auto_move_ptz[%d], analysis stay time[%d]\n ",max_index, AUTO_PTZ_MOVE_SEQ[1]);
 
     while(AUTO_PTZ_MOVE_SEQ[0]) {                         //AUTO_PTZ_MOVE_SEQ[] 의 앞의 3개 값은 AI on/off, stay time, setting 된 AUTO_PTZ_POS_LIST 의 index list 의 count(=max index)
       if (continue_tag == 0) {
@@ -474,11 +474,11 @@ int auto_move_ptz(const char* move_seq)
         AUTO_PTZ_MOVE_SEQ[3+i] = data[i];
     }
 
-    glog_trace("start auto_move_ptz[%s], data len:%d [ ", move_seq, data_len-2);
-    for(int i = 0 ; i < data_len + 1 ; i++){
-       glog_plain("%x ", AUTO_PTZ_MOVE_SEQ[i]);
-    }
-    glog_plain("]\n");
+    // glog_trace("start auto_move_ptz[%s], data len:%d [ ", move_seq, data_len-2);
+    // for(int i = 0 ; i < data_len + 1 ; i++){
+    //    glog_plain("%x ", AUTO_PTZ_MOVE_SEQ[i]);
+    // }
+    // glog_plain("]\n");
 
     //start auto ptz mode
     pthread_create(&g_tid, NULL, process_auto_move_ptz, NULL);

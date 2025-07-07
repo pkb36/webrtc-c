@@ -176,8 +176,9 @@ cleanup_and_quit_loop (const gchar * msg, enum AppState state)
     retry_timeout_id = 0;
   }
 
-  if (loop) {
-    g_main_loop_quit (loop);
+  if (loop)
+  {
+    g_main_loop_quit(loop);
     loop = NULL;
   }
 
@@ -504,10 +505,11 @@ handle_sdp_answer (const gchar * peer_id, const gchar * text)
 
 static void handle_peer_message (gchar * msg, int len, void* arg)
 { 
-  if(strcmp(msg, "ENDUP") == 0){
-    glog_trace ("ENDUP Message ... Exit program %s\n",  msg);  
-    exit(0); 
-    return ;
+  if (strcmp(msg, "STOP_WEBRTC") == 0)
+  {
+    glog_trace("STOP_WEBRTC Message ... Exit program %s\n", msg);
+    cleanup_and_quit_loop("Received STOP_WEBRTC signal", APP_STATE_UNKNOWN);
+    return;
   }
   
   JsonNode *root;
@@ -591,7 +593,9 @@ main (int argc, char *argv[])
       peer_id, g_comm_port, g_stream_base_port, g_stream_cnt, g_codec_name);
 
   // 소켓 연결
+  glog_trace("Initializing socket client for port %d\n", g_comm_port);
   g_socket = init_socket_comm_client(g_comm_port);
+  glog_trace("Sending CONNECT message to port %d\n", g_comm_port);
   send_data_socket_comm(g_socket, "CONNECT", 8, 1);
   g_socket->call_fun = handle_peer_message;
 
@@ -605,8 +609,16 @@ main (int argc, char *argv[])
     gst_element_set_state (GST_ELEMENT (pipeline), GST_STATE_NULL);
     gst_object_unref (pipeline);
   }
-  
-  glog_trace ("Pipeline stopped end client [%d] \n", g_comm_port);
+
+  glog_trace("Pipeline stopped\n");
+
+  if (g_socket) {
+      close(g_socket->socketfd);  // 단순히 소켓만 닫기
+      free(g_socket);             // 메모리 해제
+      g_socket = NULL;
+  }
+
+  glog_trace("Pipeline stopped end client [%d] \n", g_comm_port);
 
   cleanup_logging();
 

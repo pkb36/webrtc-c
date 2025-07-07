@@ -152,6 +152,18 @@ static void process_ptz_command(const char *command)
     {
         send_event_to_recorder_simple(1, 0);
     }
+    else if (strcmp(clean_cmd, "AF_Debug_On") == 0)
+    {
+        send_pipe_data("AF_Debug_On");
+    }
+    else if (strcmp(clean_cmd, "AF_Debug_Off") == 0)
+    {
+        send_pipe_data("AF_Debug_Off");
+    }
+    else if (strcmp(clean_cmd, "Focus_Position") == 0)
+    {
+        send_pipe_data("Focus_Position");
+    }
     else
     {
         glog_trace("Unknown PTZ command: %s\n", clean_cmd);
@@ -442,6 +454,19 @@ void send_msg_server(const gchar *msg)
     pthread_mutex_unlock(&g_send_mutex);
 }
 
+void cleanupSocketFile(const char* socket_path) {
+    struct stat st;
+    if (stat(socket_path, &st) == 0) {
+        // 파일이 존재하면 삭제
+        if (unlink(socket_path) == 0) {
+            glog_trace("Cleaned up existing socket file: %s", socket_path);
+        } else {
+            glog_error("Failed to remove socket file %s: %s", 
+                     socket_path, strerror(errno));
+        }
+    }
+}
+
 static gboolean start_pipeline(void)
 {
     GstStateChangeReturn ret;
@@ -507,13 +532,16 @@ static gboolean start_pipeline(void)
                     snprintf(str_video, sizeof(str_video), " video_enc_tee2_%d. ! queue ! udpsink host=127.0.0.1  port=%d sync=false async=false", device, udp_port);
 
                 strcat(str_pipeline, str_video);
-                glog_trace("str_video=%s\n", str_video);
+                // glog_trace("str_video=%s\n", str_video);
             }
         }
     }
 
     glog_trace("%lu  %s\n", strlen(str_pipeline), str_pipeline);
     g_pipeline = gst_parse_launch(str_pipeline, &error);
+
+    // glog_trace("%lu  %s\n", strlen(str_pipeline), str_pipeline);
+    
     if (error)
     {
         glog_error("Failed to parse launch: %s\n", error->message);

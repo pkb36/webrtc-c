@@ -29,7 +29,7 @@
 #include "nvds_utils.h"
 
 static int *g_cam_indices = NULL;
-
+#define MAX_OPT_FLOW_ITERATIONS 1000
 // 이벤트 전송 설정
 static gchar *g_event_tcp_host = "127.0.0.1";
 static gint g_event_tcp_port = EVENT_TCP_PORT;
@@ -60,7 +60,7 @@ int g_event_recording = 0;
 #if 0
 Timer timers[MAX_PTZ_PRESET];
 #endif
-
+static int g_event_sender_running = 1;
 ObjMonitor obj_info[NUM_CAMS][NUM_OBJS];
 
 int threshold_event_duration[NUM_CLASSES] =
@@ -81,6 +81,32 @@ float threshold_confidence[NUM_CLASSES] =
 		0.2, // NORMAL_SITTING
 };
 
+void *event_sender_thread(void *arg)
+{
+    while (g_event_sender_running)
+    {
+        if (g_event_class_id != CLASS_NORMAL_COW && g_event_class_id != EVENT_EXIT)
+        {
+            int class_id = g_event_class_id;
+            g_event_class_id = CLASS_NORMAL_COW;  // 초기화
+            
+            int ret = send_notification_to_server(class_id);
+			if (ret < 1)
+			{
+				glog_error("Failed to send event notification to server for class %d\n", class_id);
+			}
+			else
+			{
+				glog_info("Event notification sent successfully for class %d\n", class_id);
+			}
+        }
+        
+        usleep(100000);  // 100ms 대기
+    }
+    
+    return NULL;
+}
+
 static gboolean event_recording_timeout(gpointer data)
 {
 	g_event_recording = 0;
@@ -88,20 +114,34 @@ static gboolean event_recording_timeout(gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+static GMutex buffer_init_mutex;
 // 카메라 버퍼 초기화 함수
 void init_camera_buffers()
 {
-	if (buffers_initialized)
-		return;
+    g_mutex_lock(&buffer_init_mutex);
+    
+    if (buffers_initialized) {
+        glog_trace("[init_camera_buffers] Already initialized\n");
+        g_mutex_unlock(&buffer_init_mutex);
+        return;
+    }
 
-	for (int i = 0; i < NUM_CAMS; i++)
-	{
-		camera_buffers[i].head = 0;
-		camera_buffers[i].tail = 0;
-		camera_buffers[i].count = 0;
-		g_mutex_init(&camera_buffers[i].mutex);
-	}
-	buffers_initialized = TRUE;
+    glog_info("[init_camera_buffers] Initializing camera buffers\n");
+
+    for (int i = 0; i < NUM_CAMS; i++)
+    {
+        camera_buffers[i].head = 0;
+        camera_buffers[i].tail = 0;
+        camera_buffers[i].count = 0;
+        g_mutex_init(&camera_buffers[i].mutex);
+        
+        glog_trace("[init_camera_buffers] Initialized buffer for camera %d\n", i);
+    }
+    
+    buffers_initialized = TRUE;
+    glog_info("[init_camera_buffers] All buffers initialized successfully\n");
+    
+    g_mutex_unlock(&buffer_init_mutex);
 }
 
 // 검출 데이터를 버퍼에 추가하는 함수
@@ -145,11 +185,11 @@ void add_detection_to_buffer(guint camera_id, guint frame_number,
 		det->objects[obj_count].y = obj_meta->rect_params.top / (gfloat)frame_height;
 		det->objects[obj_count].width = obj_meta->rect_params.width / (gfloat)frame_width;
 		det->objects[obj_count].height = obj_meta->rect_params.height / (gfloat)frame_height;
-		printf("Object %d: class_id=%d, confidence=%.2f, bbox=(%.2f, %.2f, %.2f, %.2f)\n",
-			   obj_count, det->objects[obj_count].class_id,
-			   det->objects[obj_count].confidence,
-			   det->objects[obj_count].x, det->objects[obj_count].y,
-			   det->objects[obj_count].width, det->objects[obj_count].height);
+		// printf("Object %d: class_id=%d, confidence=%.2f, bbox=(%.2f, %.2f, %.2f, %.2f)\n",
+		// 	   obj_count, det->objects[obj_count].class_id,
+		// 	   det->objects[obj_count].confidence,
+		// 	   det->objects[obj_count].x, det->objects[obj_count].y,
+		// 	   det->objects[obj_count].width, det->objects[obj_count].height);
 			   
 		det->objects[obj_count].bbox_color = get_object_color(camera_id,
 															  obj_meta->object_id % NUM_OBJS,
@@ -263,41 +303,45 @@ BboxColor get_object_color(guint camera_id, guint object_id, gint class_id)
 
 void set_process_analysis(gboolean OnOff)
 {
-	// glog_trace("set_process_analysis analysis_status[%d] OnOff[%d] nv_interval[%d]\n",
-	// g_setting.analysis_status, OnOff, g_setting.nv_interval);
+    if (OnOff == 0)
+        check_events_for_notification(0, 1);
 
-	if (OnOff == 0)
-		check_events_for_notification(0, 1); // first parameter is don't care
+    gboolean all_success = TRUE;
 
-	for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
-	{
-		char element_name[32];
-		GstElement *nvinfer;
-		sprintf(element_name, "nvinfer_%d", cam_idx + 1);
-		nvinfer = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
-		if (nvinfer == NULL)
-		{
-			glog_trace("Fail get %s element\n", element_name);
-			continue;
-		}
+    for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
+    {
+        char element_name[32];
+        GstElement *nvinfer = NULL;
+        GstElement *dspostproc = NULL;
+        
+        // nvinfer 처리
+        sprintf(element_name, "nvinfer_%d", cam_idx + 1);
+        nvinfer = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
+        if (nvinfer) {
+            gint interval = OnOff ? g_setting.nv_interval : G_MAXINT;
+            g_object_set(G_OBJECT(nvinfer), "interval", interval, NULL);
+            g_clear_object(&nvinfer);
+        } else {
+            glog_error("Failed to get %s element\n", element_name);
+            all_success = FALSE;
+        }
 
-		gint interval = OnOff ? g_setting.nv_interval : G_MAXINT;
-		g_object_set(G_OBJECT(nvinfer), "interval", interval, NULL);
-		g_clear_object(&nvinfer);
-
-		GstElement *dspostproc;
-		sprintf(element_name, "dspostproc_%d", cam_idx + 1);
-		dspostproc = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
-		if (dspostproc == NULL)
-		{
-			glog_trace("Fail get %s element\n", element_name);
-			continue;
-		}
-
-		gboolean rest_val = OnOff ? FALSE : TRUE;
-		g_object_set(G_OBJECT(dspostproc), "reset-object", rest_val, NULL);
-		g_clear_object(&dspostproc);
-	}
+        // dspostproc 처리
+        sprintf(element_name, "dspostproc_%d", cam_idx + 1);
+        dspostproc = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
+        if (dspostproc) {
+            gboolean reset_val = OnOff ? FALSE : TRUE;
+            g_object_set(G_OBJECT(dspostproc), "reset-object", reset_val, NULL);
+            g_clear_object(&dspostproc);
+        } else {
+            glog_error("Failed to get %s element\n", element_name);
+            all_success = FALSE;
+        }
+    }
+    
+    if (!all_success) {
+        glog_error("Some elements failed to update\n");
+    }
 }
 
 int is_process_running(const char *process_name)
@@ -800,154 +844,224 @@ int get_heat_color_over_threshold(int cam_idx, int obj_id)
 
 void process_opt_flow(NvDsFrameMeta *frame_meta, int cam_idx, int obj_id, int cam_sec_interval)
 {
-	if (obj_id < 0)
-		return;
+    if (obj_id < 0)
+        return;
 
-	int count = 0;
-	double move_size = 0.0, move_size_total = 0.0, move_size_avg = 0.0;
-	double diagonal = 0;
-	int row_start = 0, col_start = 0, row_num = 0, col_num = 0;
-	int cols = 0;
-	int corr_value = 0;
-	int bbox_move = 0, rect_size_change = 0;
+    int count = 0;
+    double move_size = 0.0, move_size_total = 0.0, move_size_avg = 0.0;
+    double diagonal = 0;
+    int row_start = 0, col_start = 0, row_num = 0, col_num = 0;
+    int rows = 0, cols = 0;  // rows 추가
+    int corr_value = 0;
+    int bbox_move = 0, rect_size_change = 0;
 
-	for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next)
-	{ // LJH, added this loop
-		NvDsUserMeta *user_meta = (NvDsUserMeta *)(l_user->data);
-		// https://docs.nvidia.com/metropolis/deepstream/4.0/dev-guide/DeepStream_Development_Guide/baggage/structNvDsOpticalFlowMeta.html
-		if (user_meta->base_meta.meta_type == NVDS_OPTICAL_FLOW_META)
-		{
-			NvDsOpticalFlowMeta *opt_flow_meta = (NvDsOpticalFlowMeta *)(user_meta->user_meta_data);
-			// Access motion vector data
-			// rows = opt_flow_meta->rows;
-			cols = opt_flow_meta->cols;
-			NvOFFlowVector *flow_vectors = (NvOFFlowVector *)(opt_flow_meta->data);
-			row_start = (obj_info[cam_idx][obj_id].x / 4) + 1;
-			col_start = (obj_info[cam_idx][obj_id].y / 4) + 1;
-			row_num = obj_info[cam_idx][obj_id].width / 4;
-			col_num = obj_info[cam_idx][obj_id].height / 4;
-			// printf("id=%d,rs=%d,cs=%d,rn=%d,cn=%d\n", obj_id, row_start, col_start, row_num, col_num);
-			// glog_trace("index=%d,id=%d,x=%d,y=%d,w=%d,h=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].x, obj_info[cam_idx][obj_id].y,
-			// obj_info[cam_idx][obj_id].width, obj_info[cam_idx][obj_id].height);
-			diagonal = obj_info[cam_idx][obj_id].diagonal;
+    // glog_trace("[process_opt_flow] START - cam_idx=%d, obj_id=%d\n", cam_idx, obj_id);
 
-			move_size_total = 0.0;
-			count = 0;
-			// Process the motion vectors as needed
-			for (int row = row_start; row < (row_start + row_num); ++row)
-			{
-				for (int col = col_start; col < (col_start + col_num); ++col)
-				{
-					int index = row * cols + col;
-					NvOFFlowVector flow_vector = flow_vectors[index]; // https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_plugin_gst-nvof.html
-					move_size = calculate_sqrt(flow_vector.flowx, flow_vector.flowy);
-					move_size_total += move_size;
-					count++;
-				}
-			}
-			if (count > 0)
-			{
-				move_size_avg = move_size_total / (double)count;
-				// glog_trace("count=%d, move_size_avg=%lf\n", count, move_size_avg);
-				obj_info[cam_idx][obj_id].opt_flow_check_count++;
-				obj_info[cam_idx][obj_id].move_size_avg = update_average(obj_info[cam_idx][obj_id].move_size_avg,
-																		 obj_info[cam_idx][obj_id].opt_flow_check_count, move_size_avg);
-				// glog_trace("[%d][%d].opt_flow_check_count=%d, move_size_avg=%lf diag=%.1f\n",
-				//     cam_idx, obj_id, obj_info[cam_idx][obj_id].opt_flow_check_count, obj_info[cam_idx][obj_id].move_size_avg,
-				//     diagonal);
-			}
-			if (cam_sec_interval)
-			{
-				bbox_move = get_move_distance(cam_idx, obj_id);
-				rect_size_change = get_rect_size_change(cam_idx, obj_id);
-				set_prev_xy(cam_idx, obj_id);
-				set_prev_rect_size(cam_idx, obj_id);
+    for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next)
+    {
+        NvDsUserMeta *user_meta = (NvDsUserMeta *)(l_user->data);
+        
+        if (user_meta->base_meta.meta_type == NVDS_OPTICAL_FLOW_META)
+        {
+            // glog_trace("[process_opt_flow] Found optical flow metadata\n");
+            
+            NvDsOpticalFlowMeta *opt_flow_meta = (NvDsOpticalFlowMeta *)(user_meta->user_meta_data);
+            
+            if (!opt_flow_meta || !opt_flow_meta->data) {
+                glog_error("[process_opt_flow] ERROR: NULL metadata!\n");
+                continue;
+            }
+            
+            rows = opt_flow_meta->rows;  // ✅ rows 값 저장
+            cols = opt_flow_meta->cols;
+            NvOFFlowVector *flow_vectors = (NvOFFlowVector *)(opt_flow_meta->data);
+            
+            // glog_trace("[process_opt_flow] Flow grid: rows=%d, cols=%d, total_size=%d\n", 
+            //            rows, cols, rows * cols);
+            
+            // ✅ 좌표 변환 수정: x는 column, y는 row
+            col_start = obj_info[cam_idx][obj_id].x / 4;      // x → col
+            row_start = obj_info[cam_idx][obj_id].y / 4;      // y → row
+            col_num = obj_info[cam_idx][obj_id].width / 4;    // width → col 개수
+            row_num = obj_info[cam_idx][obj_id].height / 4;   // height → row 개수
+            
+            // ✅ 경계 체크 및 조정
+            if (col_start < 0) col_start = 0;
+            if (row_start < 0) row_start = 0;
+            if (col_start >= cols) col_start = cols - 1;
+            if (row_start >= rows) row_start = rows - 1;
+            
+            if (col_start + col_num > cols) col_num = cols - col_start;
+            if (row_start + row_num > rows) row_num = rows - row_start;
+            
+            // glog_trace("[process_opt_flow] Adjusted bounds: row[%d-%d), col[%d-%d)\n",
+            //            row_start, row_start + row_num, col_start, col_start + col_num);
+            
+            diagonal = obj_info[cam_idx][obj_id].diagonal;
+            move_size_total = 0.0;
+            count = 0;
+            
+            // Process the motion vectors
+            for (int row = row_start; row < (row_start + row_num) && row < rows; ++row)
+            {
+                for (int col = col_start; col < (col_start + col_num) && col < cols; ++col)
+                {
+                    int index = row * cols + col;
+                    int max_index = rows * cols;
+                    
+                    if (index < 0 || index >= max_index) {
+                        glog_error("[process_opt_flow] Index still out of bounds! index=%d, max=%d\n",
+                                   index, max_index);
+                        continue;
+                    }
+                    
+                    NvOFFlowVector flow_vector = flow_vectors[index];
+                    move_size = calculate_sqrt(flow_vector.flowx, flow_vector.flowy);
+                    move_size_total += move_size;
+                    count++;
+                }
+            }
+            
+            // glog_trace("[process_opt_flow] Processed %d flow vectors\n", count);
+            
+            if (count > 0)
+            {
+                move_size_avg = move_size_total / (double)count;
+                obj_info[cam_idx][obj_id].opt_flow_check_count++;
+                obj_info[cam_idx][obj_id].move_size_avg = update_average(
+                    obj_info[cam_idx][obj_id].move_size_avg,
+                    obj_info[cam_idx][obj_id].opt_flow_check_count, 
+                    move_size_avg);
+            }
+            
+            if (cam_sec_interval)
+            {
+                bbox_move = get_move_distance(cam_idx, obj_id);
+                rect_size_change = get_rect_size_change(cam_idx, obj_id);
+                set_prev_xy(cam_idx, obj_id);
+                set_prev_rect_size(cam_idx, obj_id);
 
-				if (obj_info[cam_idx][obj_id].move_size_avg > 0)
-				{
-					glog_trace("[SEC] [%d][%d].move_size_avg=%.1f,confi=%.2f,diag=%.1f\n", cam_idx, obj_id,
-							   obj_info[cam_idx][obj_id].move_size_avg, obj_info[cam_idx][obj_id].confidence, diagonal);
-				}
+                if (obj_info[cam_idx][obj_id].move_size_avg > 0)
+                {
+                    glog_trace("[SEC] [%d][%d].move_size_avg=%.1f,confi=%.2f,diag=%.1f\n", 
+                               cam_idx, obj_id,
+                               obj_info[cam_idx][obj_id].move_size_avg, 
+                               obj_info[cam_idx][obj_id].confidence, 
+                               diagonal);
+                }
 
-				if (bbox_move < THRESHOLD_BBOX_MOVE && rect_size_change < THRESHOLD_RECT_SIZE_CHANGE && g_move_speed == 0)
-				{
-					corr_value = get_correction_value(diagonal); // LJH, when rectangle is small the move size tend to increase
-					if (cam_idx == RGB_CAM)
-					{ // LJH, RGB optical flow is more sensitive
-						corr_value += 9;
-					}
-					if (obj_info[cam_idx][obj_id].move_size_avg > (g_setting.opt_flow_threshold + corr_value))
-					{
-						obj_info[cam_idx][obj_id].opt_flow_detected_count++;
-						glog_trace("[%d][%d].opt_flow_detected_count ==> %d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].opt_flow_detected_count);
-					}
-				}
-				else
-				{
-					glog_trace("[SEC] bbox_move=%d,rect_size_change=%d,g_move_speed=%d\n", bbox_move, rect_size_change, g_move_speed);
-				}
-				init_opt_flow(cam_idx, obj_id, 0);
-			}
-		}
-	}
+                if (bbox_move < THRESHOLD_BBOX_MOVE && 
+                    rect_size_change < THRESHOLD_RECT_SIZE_CHANGE && 
+                    g_move_speed == 0)
+                {
+                    corr_value = get_correction_value(diagonal);
+                    if (cam_idx == RGB_CAM)
+                    {
+                        corr_value += 9;
+                    }
+                    
+                    if (obj_info[cam_idx][obj_id].move_size_avg > 
+                        (g_setting.opt_flow_threshold + corr_value))
+                    {
+                        obj_info[cam_idx][obj_id].opt_flow_detected_count++;
+                        glog_trace("[%d][%d].opt_flow_detected_count ==> %d\n", 
+                                   cam_idx, obj_id, 
+                                   obj_info[cam_idx][obj_id].opt_flow_detected_count);
+                    }
+                }
+                else
+                {
+                    glog_trace("[SEC] bbox_move=%d,rect_size_change=%d,g_move_speed=%d\n", 
+                               bbox_move, rect_size_change, g_move_speed);
+                }
+                
+                init_opt_flow(cam_idx, obj_id, 0);
+            }
+        }
+    }
+    
+    // glog_trace("[process_opt_flow] END\n");
 }
 
 #endif
 
 void set_obj_rect_id(int cam_idx, NvDsObjectMeta *obj_meta, int cam_sec_interval)
 {
-	static int x = 0, y = 0, width = 0, height = 0, rect_set = 0;
+    if (cam_idx < 0 || cam_idx >= NUM_CAMS) {
+        glog_error("[set_obj_rect_id] Invalid cam_idx: %d (MAX: %d)\n", cam_idx, NUM_CAMS);
+        return;
+    }
 
-	if (obj_meta->object_id < 0)
-		return;
+    if (obj_meta->object_id < 0) {
+        glog_error("[set_obj_rect_id] Negative object_id: %d\n", obj_meta->object_id);
+        return;
+    }
 
-	if (cam_sec_interval)
-	{
-		x = (int)obj_meta->rect_params.left;
-		y = (int)obj_meta->rect_params.top;
-		width = (int)obj_meta->rect_params.width;
-		height = (int)obj_meta->rect_params.height;
-		rect_set = 1;
-	}
+    int obj_idx = obj_meta->object_id % NUM_OBJS;
+    
+    // 현재 프레임의 bounding box 정보 직접 사용
+    int x = (int)obj_meta->rect_params.left;
+    int y = (int)obj_meta->rect_params.top;
+    int width = (int)obj_meta->rect_params.width;
+    int height = (int)obj_meta->rect_params.height;
 
-	if (rect_set)
-	{
-		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].x = x;
-		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].y = y;
-		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].width = width;
-		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].height = height;
-	}
-	else
-	{
-		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].x = (int)obj_meta->rect_params.left;
-		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].y = (int)obj_meta->rect_params.top;
-		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].width = (int)obj_meta->rect_params.width;
-		obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].height = (int)obj_meta->rect_params.height;
-	}
+    // 객체 정보 저장
+    obj_info[cam_idx][obj_idx].x = x;
+    obj_info[cam_idx][obj_idx].y = y;
+    obj_info[cam_idx][obj_idx].width = width;
+    obj_info[cam_idx][obj_idx].height = height;
 
-	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].center_x = obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].x + (obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].width / 2);
-	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].center_x = obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].y + (obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].height / 2);
+    // center_x, center_y 계산 (버그 수정)
+    obj_info[cam_idx][obj_idx].center_x = x + (width / 2);
+    obj_info[cam_idx][obj_idx].center_y = y + (height / 2);  // ← 수정됨!
 
-	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].class_id = (int)obj_meta->class_id;
-	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].diagonal = calculate_sqrt((double)width, (double)height);
-	obj_info[cam_idx][obj_meta->object_id % NUM_OBJS].confidence = (float)obj_meta->confidence;
+    // 대각선 길이 계산 (피타고라스 정리)
+    obj_info[cam_idx][obj_idx].diagonal = calculate_sqrt((double)width, (double)height);
+
+    // 클래스 정보 저장
+    obj_info[cam_idx][obj_idx].class_id = (int)obj_meta->class_id;
+    obj_info[cam_idx][obj_idx].confidence = (float)obj_meta->confidence;
+
+    // 디버깅을 위한 로그 (필요시 활성화)
+    // #ifdef DEBUG_OBJ_RECT
+    // if (cam_sec_interval) {
+    //     glog_trace("[set_obj_rect_id] cam=%d, obj=%d, bbox=(%d,%d,%d,%d), "
+    //                "center=(%d,%d), diag=%.2f, class=%d, conf=%.2f\n",
+    //                cam_idx, obj_idx, x, y, width, height,
+    //                obj_info[cam_idx][obj_idx].center_x,
+    //                obj_info[cam_idx][obj_idx].center_y,
+    //                obj_info[cam_idx][obj_idx].diagonal,
+    //                obj_info[cam_idx][obj_idx].class_id,
+    //                obj_info[cam_idx][obj_idx].confidence);
+    // }
+    // #endif
 }
 
 #if THERMAL_TEMP_INCLUDE
 void get_pixel_color(NvBufSurface *surface, guint batch_idx, guint x, guint y, unsigned char *r, unsigned char *g, unsigned char *b, unsigned char *a)
 {
-	if (!surface)
-	{
-		printf("Surface is NULL.\n");
-		return;
-	}
+	if (!surface) {
+        glog_error("[get_pixel_color] Surface is NULL\n");
+        return;
+    }
 
-	// Get the surface information for the batch
-	NvBufSurfaceParams *params = &surface->surfaceList[batch_idx];
-	// if (params->memType != NVBUF_MEM_CUDA_DEVICE) {
-	//      printf("Surface is not CUDA memory type.\n");
-	//      return;
-	// }
+    if (batch_idx >= surface->numFilled) {
+        glog_error("[get_pixel_color] batch_idx %u exceeds numFilled %u\n", 
+                   batch_idx, surface->numFilled);
+        return;
+    }
+
+    if (!surface->surfaceList) {
+        glog_error("[get_pixel_color] surfaceList is NULL\n");
+        return;
+    }
+
+    NvBufSurfaceParams *params = &surface->surfaceList[batch_idx];
+    
+    if (!params->dataPtr) {
+        glog_error("[get_pixel_color] dataPtr is NULL for batch_idx %u\n", batch_idx);
+        return;
+    }
 
 	// Get the width, height, and color format of the surface
 	int width = params->width;
@@ -1030,21 +1144,30 @@ void get_bbox_temp(GstBuffer *buf, int obj_id)
 	float pixel_temp = 0;
 	unsigned char r = 0, g = 0, b = 0, a = 0;
 
-	NvBufSurface *surface = NULL;
-	GstMapInfo map_info;
+	if (obj_id < 0) {
+        glog_error("[get_bbox_temp] Invalid obj_id: %d\n", obj_id);
+        return;
+    }
 
-	if (!gst_buffer_map(buf, &map_info, GST_MAP_READ))
-	{
-		gst_buffer_unmap(buf, &map_info);
-		return;
-	}
+    NvBufSurface *surface = NULL;
+    GstMapInfo map_info;
 
-	surface = (NvBufSurface *)map_info.data;
-	if (surface == NULL)
-	{
-		gst_buffer_unmap(buf, &map_info); // ✅ 에러시에도 unmap
-		return;
-	}
+    if (!gst_buffer_map(buf, &map_info, GST_MAP_READ))
+    {
+        glog_error("[get_bbox_temp] Failed to map buffer for obj_id: %d\n", obj_id);
+        // ❌ unmap 제거
+        return;
+    }
+
+    surface = (NvBufSurface *)map_info.data;
+    if (surface == NULL)
+    {
+        glog_error("[get_bbox_temp] Surface is NULL for obj_id: %d\n", obj_id);
+        gst_buffer_unmap(buf, &map_info);
+        return;
+    }
+
+    //glog_trace("[get_bbox_temp] Successfully mapped buffer for obj_id: %d\n", obj_id);
 
 	x_start = (obj_info[THERMAL_CAM][obj_id].x);
 	y_start = (obj_info[THERMAL_CAM][obj_id].y);
@@ -1298,6 +1421,7 @@ void add_correction()
 
 void set_color(NvDsObjectMeta *obj_meta, int color, int set_text_blank)
 {
+	//glog_trace("set_color: obj_id=%ld, color=%d, set_text_blank=%d\n", obj_meta->object_id, color, set_text_blank);
 	switch (color)
 	{
 	case GREEN_COLOR:
@@ -1453,6 +1577,10 @@ void cleanup_camera_buffers()
  * and update params for drawing rectangle, object information etc. */
 static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u_data) // LJH, this function is called per frame
 {
+	if (!g_setting.analysis_status) {
+        return GST_PAD_PROBE_OK;
+    }
+
 	GstBuffer *buf = (GstBuffer *)info->data;
 	NvDsObjectMeta *obj_meta = NULL;
 	NvDsMetaList *l_frame = NULL;
@@ -1528,6 +1656,7 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 #if TRACK_PERSON_INCLUDE
 			set_person_obj_state(object, obj_meta);
 #else
+			// printf("cam_idx=%d, obj_id=%d, class_id=%d, confidence=%.2f\n", cam_idx, obj_meta->object_id, obj_meta->class_id, obj_meta->confidence);
 			if (obj_meta->class_id == CLASS_NORMAL_COW || obj_meta->class_id == CLASS_NORMAL_COW_SITTING)
 			{
 				if (obj_meta->confidence >= threshold_confidence[obj_meta->class_id])
@@ -1621,7 +1750,7 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 												  obj_info[cam_idx][obj_meta->object_id].diagonal > big_obj_diag[cam_idx]))
 			{ // if bounding box is too small or too big don't display bounding box
 				set_color(obj_meta, NO_BBOX, 0);
-				// glog_trace("small||big [%d][%d].diagonal=%f\n", cam_idx, obj_meta->object_id, obj_info[cam_idx][obj_meta->object_id].diagonal);
+				//glog_trace("small||big [%d][%d].diagonal=%f\n", cam_idx, obj_meta->object_id, obj_info[cam_idx][obj_meta->object_id].diagonal);
 			}
 			remove_newline_text(obj_meta);
 			// glog_trace("g_move_speed=%d id=%d text=%s\n", g_move_speed, obj_meta->object_id, obj_meta->text_params.display_text);     //LJH, for test
@@ -1654,14 +1783,28 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 #endif
 			}
 #if OPTICAL_FLOW_INCLUDE
-			if (g_setting.opt_flow_apply)
+			start_obj_id = 0;
+			int iteration_count = 0;
+			
+			while ((obj_id = get_opt_flow_object(cam_idx, start_obj_id)) != -1)
 			{
-				start_obj_id = 0;
-				while ((obj_id = get_opt_flow_object(cam_idx, start_obj_id)) != -1)
-				{
-					process_opt_flow(frame_meta, cam_idx, obj_id, sec_interval[cam_idx]); // if object is heat state, then check optical flow
-					start_obj_id = (obj_id + 1) % NUM_OBJS;
+				if (iteration_count++ > MAX_OPT_FLOW_ITERATIONS) {
+					glog_error("[osd_sink_pad_buffer_probe] Possible infinite loop detected! "
+							"cam_idx=%d, start_obj_id=%d, obj_id=%d\n", 
+							cam_idx, start_obj_id, obj_id);
+					break;
 				}
+				
+				glog_trace("[osd_sink_pad_buffer_probe] Processing opt flow: "
+						"iteration=%d, cam_idx=%d, obj_id=%d\n", 
+						iteration_count, cam_idx, obj_id);
+				
+				process_opt_flow(frame_meta, cam_idx, obj_id, sec_interval[cam_idx]);
+				start_obj_id = (obj_id + 1) % NUM_OBJS;
+			}
+			
+			if (iteration_count > 100) {
+				glog_trace("[osd_sink_pad_buffer_probe] High iteration count: %d\n", iteration_count);
 			}
 #endif
 			if (sec_interval[cam_idx])
@@ -1721,6 +1864,8 @@ void setup_nv_analysis()
 		gst_object_unref(osd_sink_pad);
 		gst_object_unref(nvosd);
 	}
+
+	pthread_create(&g_tid, NULL, event_sender_thread, NULL);
 }
 
 void endup_nv_analysis()
