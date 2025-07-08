@@ -1437,8 +1437,8 @@ PipelineConfig* get_default_config() {
     config->rgb_height = 720;
     config->thermal_width = 640;
     config->thermal_height = 480;
-    config->rgb_output_width = 1920;
-    config->rgb_output_height = 1080;
+    config->rgb_output_width = 1280;
+    config->rgb_output_height = 720;
     config->thermal_output_width = 384;
     config->thermal_output_height = 288;
 

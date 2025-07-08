@@ -20,7 +20,7 @@ COMMON_OBJS := $(OBJ_DIR)/log.o $(OBJ_DIR)/log_wrapper.o
 GSTREAM_OBJS := $(OBJ_DIR)/gstream_main.o $(OBJ_DIR)/config.o $(OBJ_DIR)/serial_comm.o $(OBJ_DIR)/socket_comm.o \
                 $(OBJ_DIR)/webrtc_peer.o $(OBJ_DIR)/process_cmd.o $(OBJ_DIR)/json_utils.o $(OBJ_DIR)/command_handler.o \
                 $(OBJ_DIR)/gstream_control.o $(OBJ_DIR)/curllib.o $(OBJ_DIR)/device_setting.o $(OBJ_DIR)/nvds_process.o \
-                $(OBJ_DIR)/nvds_utils.o $(OBJ_DIR)/ptz_control.o $(OBJ_DIR)/circular_buffer.o
+                $(OBJ_DIR)/nvds_utils.o $(OBJ_DIR)/ptz_control.o $(OBJ_DIR)/circular_buffer.o $(OBJ_DIR)/tegrastats_monitor.o
 
 # 최종 실행파일들
 TARGETS := $(BUILD_DIR)/gstream_main $(BUILD_DIR)/webrtc_sender \

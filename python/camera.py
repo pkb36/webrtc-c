@@ -51,10 +51,18 @@ class CameraRecorder:
         self.config = camera_config
         self.base_output_dir = Path(output_dir)
         self.test_file = test_file
-
+        self.recording_enabled = True
+        
         current_date = datetime.now().strftime("RECORD_%Y%m%d")
         self.output_dir = self.base_output_dir / current_date
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error(f"디렉토리 생성 실패 ({e.errno}): {self.output_dir} - {e}")
+            self.recording_enabled = False  # 녹화 비활성화
+            logger.warning(f"{self.config['name']}: 녹화 비활성화됨 - 스트리밍만 동작")
 
         # 녹화 관련
         self.video_file = None
@@ -88,9 +96,17 @@ class CameraRecorder:
 
     def get_output_pattern(self):
         """splitmuxsink용 파일명 패턴 생성"""
+        if not self.recording_enabled:
+            return "dummy.mp4"  # 더미 값 반환
+            
         current_date = datetime.now().strftime("RECORD_%Y%m%d")
         output_dir = self.base_output_dir / current_date
-        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error(f"디렉토리 생성 실패: {output_dir} - {e}")
+            return "dummy.mp4"  # 에러 시 더미 값 반환
         
         # CAM0 또는 CAM1 형식으로 카메라 구분
         if 'RGB' in self.config['name']:
@@ -107,42 +123,58 @@ class CameraRecorder:
 
     def create_pipeline(self):
         """GStreamer 파이프라인 생성"""
-
+        
         if self.test_file:
-            camera_source = self._get_file_source()  # 테스트 파일 사용
+            camera_source = self._get_file_source()
         else:
-            camera_source = self._get_camera_source()  # 기존 카메라 사용
-
-        initial_location = "dummy.mp4"
+            camera_source = self._get_camera_source()
 
         encoder_settings = self._get_encoder_settings()
+        send_encoder_settings = self._get_send_encoder_settings()
         
-        pipeline_str = f"""
-            {camera_source} !
-            tee name=t
-            
-            t. ! queue max-size-buffers=100 max-size-bytes=0 max-size-time=0 ! 
-            videoconvert ! 
-            video/x-raw, format=I420 !
-            nvvidconv ! 
-            video/x-raw(memory:NVMM), format=I420 ! 
-            {encoder_settings} !
-            h264parse !
-            splitmuxsink name=filesink 
-                location={initial_location}
-                max-size-time=300000000000 
-                mux-properties="properties,reserved-moov-update-period=1000000000"
-            
-            t. ! queue max-size-buffers=100 max-size-bytes=0 max-size-time=0 ! 
-            videoconvert ! 
-            video/x-raw, format=I420 !
-            nvvidconv ! 
-            video/x-raw(memory:NVMM), format=I420 ! 
-            {encoder_settings} !
-            h264parse !
-            rtph264pay config-interval=1 pt=96 !
-            udpsink host={self.config['udp_host']} port={self.config['udp_port']} sync=false async=false
-        """
+        # 녹화가 비활성화된 경우 스트리밍만 수행
+        if not self.recording_enabled:
+            pipeline_str = f"""
+                {camera_source} !
+                videoconvert ! 
+                video/x-raw, format=I420 !
+                nvvidconv ! 
+                video/x-raw(memory:NVMM), format=I420 ! 
+                {send_encoder_settings} !
+                h264parse !
+                rtph264pay config-interval=1 pt=96 !
+                udpsink host={self.config['udp_host']} port={self.config['udp_port']} sync=false async=false
+            """
+            logger.warning(f"{self.config['name']}: 스트리밍 전용 파이프라인 생성")
+        else:
+            # 기존 전체 파이프라인
+            initial_location = "dummy.mp4"
+            pipeline_str = f"""
+                {camera_source} !
+                tee name=t
+                
+                t. ! queue max-size-buffers=100 max-size-bytes=0 max-size-time=0 ! 
+                videoconvert ! 
+                video/x-raw, format=I420 !
+                nvvidconv ! 
+                video/x-raw(memory:NVMM), format=I420 ! 
+                {encoder_settings} !
+                h264parse !
+                splitmuxsink name=filesink 
+                    location={initial_location}
+                    max-size-time=300000000000 
+                    mux-properties="properties,reserved-moov-update-period=1000000000"
+                
+                t. ! queue max-size-buffers=100 max-size-bytes=0 max-size-time=0 ! 
+                videoconvert ! 
+                video/x-raw, format=I420 !
+                nvvidconv ! 
+                video/x-raw(memory:NVMM), format=I420 ! 
+                {send_encoder_settings} !
+                h264parse !
+                rtph264pay config-interval=1 pt=96 !
+                udpsink host={self.config['udp_host']} port={self.config['udp_port']} sync=false async=false
+            """
         
         logger.info(f"파이프라인 생성: {self.config['name']}")
         logger.debug(f"파이프라인: {pipeline_str}")
@@ -177,11 +209,19 @@ class CameraRecorder:
 
     def on_format_location(self, splitmux, fragment_id):
         """splitmuxsink가 새 파일을 생성할 때 호출되는 콜백"""
-        # 현재 시간으로 파일명 생성
+        if not self.recording_enabled:
+            return "dummy.mp4"  # 녹화 비활성화 시 더미 값
+            
         current_time = datetime.now()
         current_date = current_time.strftime("RECORD_%Y%m%d")
         output_dir = self.base_output_dir / current_date
-        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error(f"디렉토리 생성 실패: {output_dir} - {e}")
+            self.recording_enabled = False  # 녹화 비활성화
+            return "dummy.mp4"
         
         # 카메라 ID 결정
         cam_id = 0 if self.config['device_id'] == 0 else 1
@@ -280,8 +320,22 @@ class CameraRecorder:
         # H.264 인코더 설정 (키프레임 간격 30 = 1초)
         return (
             f"nvv4l2h264enc bitrate={bitrate} preset-level=2 "
-            f"idrinterval=5 insert-sps-pps=true "
+            f"idrinterval=10 insert-sps-pps=true "
             f"profile=2 maxperf-enable=true"  # High profile, 최대 성능
+        )
+
+    def _get_send_encoder_settings(self):
+        """인코더 설정"""
+        # H.264 인코더 설정 (키프레임 간격 30 = 1초)
+        return (
+            f"nvv4l2h264enc bitrate=4000000 preset-level=2 "
+            f"control-rate=1 "
+            f"num-Ref-Frames=2 "
+            f"insert-vui=true "
+            f"idrinterval=10 insert-sps-pps=true "
+            f"num-B-Frames=0 "              # B프레임 비활성화 (지연 감소)
+            f"num-Ref-Frames=3 " 
+            f"profile=4 maxperf-enable=true"  # High profile, 최대 성능
         )
         
     def _is_keyframe(self, data):

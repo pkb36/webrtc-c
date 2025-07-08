@@ -179,11 +179,6 @@ void check_events_for_notification(int cam_idx, int init);
 int get_opt_flow_object(int cam_idx, int obj_id);
 gboolean send_event_to_recorder_simple(int class_id, int camera_id);
 
-gint get_detections_for_timerange(guint camera_id, guint64 start_time, 
-                                  guint64 end_time, DetectionData *results, 
-                                  gint max_results);
-gboolean get_latest_detection(guint camera_id, DetectionData *result);
-
 BboxColor get_object_color(guint camera_id, guint object_id, gint class_id);
 int send_notification_to_server(int class_id);
 

@@ -35,17 +35,6 @@ static int *g_cam_indices = NULL;
 #define MAX_DETECTION_BUFFER_SIZE 10000 // 최대 10000 프레임
 #define BUFFER_DURATION_SEC 120			// 120초 버퍼
 
-typedef struct
-{
-	DetectionData buffer[MAX_DETECTION_BUFFER_SIZE];
-	gint head;	  // 버퍼의 시작 위치
-	gint tail;	  // 버퍼의 끝 위치
-	gint count;	  // 현재 저장된 아이템 수
-	GMutex mutex; // 스레드 안전을 위한 뮤텍스
-} CameraBuffer;
-
-static CameraBuffer camera_buffers[NUM_CAMS];
-
 int g_cam_index = 0;
 int g_noti_cam_idx = 0;
 int g_top = 0, g_left = 0, g_width = 0, g_height = 0;
@@ -194,21 +183,8 @@ void set_process_analysis(gboolean OnOff)
     for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
     {
         char element_name[32];
-        GstElement *nvinfer = NULL;
         GstElement *dspostproc = NULL;
         
-        // nvinfer 처리
-        sprintf(element_name, "nvinfer_%d", cam_idx + 1);
-        nvinfer = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
-        if (nvinfer) {
-            gint interval = OnOff ? g_setting.nv_interval : G_MAXINT;
-            g_object_set(G_OBJECT(nvinfer), "interval", interval, NULL);
-            g_clear_object(&nvinfer);
-        } else {
-            glog_error("Failed to get %s element\n", element_name);
-            all_success = FALSE;
-        }
-
         // dspostproc 처리
         sprintf(element_name, "dspostproc_%d", cam_idx + 1);
         dspostproc = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
@@ -1202,94 +1178,6 @@ void set_temp_bbox_color(NvDsObjectMeta *obj_meta)
 		set_color(obj_meta, BLUE_COLOR, 0);
 		// glog_trace("blue bbox obj_id=%d\n", obj_meta->object_id);
 	}
-}
-
-// 특정 시간 범위의 검출 데이터 조회
-gint get_detections_for_timerange(guint camera_id, guint64 start_time,
-								  guint64 end_time, DetectionData *results,
-								  gint max_results)
-{
-	if (camera_id >= NUM_CAMS)
-	{
-		glog_error("Invalid camera ID: %d\n", camera_id);
-		return 0;
-	}
-
-	CameraBuffer *cam_buf = &camera_buffers[camera_id];
-	gint result_count = 0;
-
-	g_mutex_lock(&cam_buf->mutex);
-
-	// 버퍼 순회
-	for (gint i = 0; i < cam_buf->count && result_count < max_results; i++)
-	{
-		gint idx = (cam_buf->head + i) % MAX_DETECTION_BUFFER_SIZE;
-		DetectionData *det = &cam_buf->buffer[idx];
-
-		if (det->timestamp >= start_time && det->timestamp <= end_time)
-		{
-			// 데이터 복사
-			memcpy(&results[result_count], det, sizeof(DetectionData));
-			result_count++;
-		}
-	}
-
-	g_mutex_unlock(&cam_buf->mutex);
-
-	return result_count;
-}
-
-// 최신 검출 데이터 조회
-gboolean get_latest_detection(guint camera_id, DetectionData *result)
-{
-	if (camera_id >= NUM_CAMS || result == NULL)
-		return FALSE;
-
-	CameraBuffer *cam_buf = &camera_buffers[camera_id];
-
-	g_mutex_lock(&cam_buf->mutex);
-
-	if (cam_buf->count > 0)
-	{
-		// tail 이전 위치가 최신 데이터
-		gint latest_idx = (cam_buf->tail - 1 + MAX_DETECTION_BUFFER_SIZE) %
-						  MAX_DETECTION_BUFFER_SIZE;
-		memcpy(result, &cam_buf->buffer[latest_idx], sizeof(DetectionData));
-		g_mutex_unlock(&cam_buf->mutex);
-		return TRUE;
-	}
-
-	g_mutex_unlock(&cam_buf->mutex);
-	return FALSE;
-}
-
-// 버퍼 통계 조회
-void get_buffer_stats(guint camera_id, gint *buffer_size,
-					  guint64 *oldest_timestamp, guint64 *latest_timestamp)
-{
-	if (camera_id >= NUM_CAMS)
-		return;
-
-	CameraBuffer *cam_buf = &camera_buffers[camera_id];
-
-	g_mutex_lock(&cam_buf->mutex);
-
-	*buffer_size = cam_buf->count;
-
-	if (cam_buf->count > 0)
-	{
-		*oldest_timestamp = cam_buf->buffer[cam_buf->head].timestamp;
-		gint latest_idx = (cam_buf->tail - 1 + MAX_DETECTION_BUFFER_SIZE) %
-						  MAX_DETECTION_BUFFER_SIZE;
-		*latest_timestamp = cam_buf->buffer[latest_idx].timestamp;
-	}
-	else
-	{
-		*oldest_timestamp = 0;
-		*latest_timestamp = 0;
-	}
-
-	g_mutex_unlock(&cam_buf->mutex);
 }
 
 /* osd_sink_pad_buffer_probe  will extract metadata received on OSD sink pad
