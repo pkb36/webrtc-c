@@ -15,12 +15,12 @@ typedef struct
   int   stream_base_port;
 
   int   device_cnt;
-  char* video_src[2];
-  char* video_infer[2];
-  char* video_enc[2];
-  char* video_enc2[2];
-  char* snapshot_enc[2];
 
+  int flip_method[2]; // 0: none, 1: horizontal, 2: vertical, 3: both
+  int bitrate_high[2];
+  int bitrate_low[2];
+  char* model_config[2];
+  
   char* server_ip;
   char* snapshot_path;
   int   status_timer_interval;

@@ -472,73 +472,23 @@ static gboolean start_pipeline(void)
     GstStateChangeReturn ret;
     GError *error = NULL;
 
-    char str_pipeline[8192 * 2] = {
-        0,
-    };
-    char str_video[4096];
+    PipelineConfig *config;
+    gchar *pipeline_string;
 
-    for (int i = 0; i < g_config.device_cnt; i++)
-    {
-        snprintf(str_video, 4096,
-                 "%s  "
-                 "%s  "
-                 "location=%s/cam%d_snapshot.jpg  "
-                 "%s  "
-                 "%s  "
-                 "tee name=video_enc_tee1_%d "
-                 "%s  "
-                 "tee name=video_enc_tee2_%d ",
-                 g_config.video_src[i], g_config.snapshot_enc[i], g_config.snapshot_path, i, g_config.video_infer[i], g_config.video_enc[i], i, g_config.video_enc2[i], i);
-        strcat(str_pipeline, str_video);
-    }
+    config = get_default_config();
+    config->rgb_flip_method = g_config.flip_method[RGB_CAM];
 
-    if (strstr(g_config.video_enc[0], "vp8"))
-    {
-        strcpy(g_codec_name, "VP8");
-    }
-    else if (strstr(g_config.video_enc[0], "vp9"))
-    {
-        strcpy(g_codec_name, "VP9");
-    }
-    else if (strstr(g_config.video_enc[0], "264"))
-    {
-        strcpy(g_codec_name, "H264");
-    }
+    config->bitrate_high_rgb = g_config.bitrate_high[RGB_CAM];
+    config->bitrate_low_rgb = g_config.bitrate_low[RGB_CAM];
+    config->bitrate_high_thermal = g_config.bitrate_high[THERMAL_CAM];
+    config->bitrate_low_thermal = g_config.bitrate_low[THERMAL_CAM];
+    config->model_config_rgb = g_config.model_config[RGB_CAM];
+    config->model_config_thermal = g_config.model_config[THERMAL_CAM];
 
-    // main stream(=tee1): sender(=10)+record(=1)+event record(=1) == g_config.max_stream_cnt(=10)+2
-    // second stream(=tee2): sender(=10)+record(=1)+event record(=1) == g_config.max_stream_cnt(=10)+2, the plus gap from main stream port number is 100
-    int udp_port = 0;
-    int index = 0;
-    CameraDevice device = RGB_CAM;
-    for (StreamChoice stream = MAIN_STREAM; stream <= SECOND_STREAM; stream++)
-    {
-        for (int i = 0; i < g_config.max_stream_cnt + 2; i++)
-        {
-            for (int j = 0; j < g_config.device_cnt; j++)
-            {
-                device = j;
-                index = i;
-
-                if (i < g_config.max_stream_cnt)
-                    udp_port = get_udp_port(SENDER, device, stream, index);
-                else if (i == g_config.max_stream_cnt)
-                    udp_port = get_udp_port(RECORDER, device, stream, 0);
-                else if (i == (g_config.max_stream_cnt + 1))
-                    udp_port = get_udp_port(EVENT_RECORDER, device, stream, 0);
-
-                if (stream == MAIN_STREAM)
-                    snprintf(str_video, sizeof(str_video), " video_enc_tee1_%d. ! queue ! udpsink host=127.0.0.1  port=%d sync=false async=false", device, udp_port);
-                else if (stream == SECOND_STREAM)
-                    snprintf(str_video, sizeof(str_video), " video_enc_tee2_%d. ! queue ! udpsink host=127.0.0.1  port=%d sync=false async=false", device, udp_port);
-
-                strcat(str_pipeline, str_video);
-                // glog_trace("str_video=%s\n", str_video);
-            }
-        }
-    }
-
-    glog_trace("%lu  %s\n", strlen(str_pipeline), str_pipeline);
-    g_pipeline = gst_parse_launch(str_pipeline, &error);
+    pipeline_string = build_complete_pipeline(config);
+    g_print("Pipeline length: %lu\n", strlen(pipeline_string));
+    
+    g_pipeline = gst_parse_launch(pipeline_string, &error);
 
     // glog_trace("%lu  %s\n", strlen(str_pipeline), str_pipeline);
     
@@ -1471,4 +1421,231 @@ int main(int argc, char *argv[])
     cleanup_logging();
 
     return 0;
+}
+
+PipelineConfig* get_default_config() {
+    PipelineConfig *config = g_new0(PipelineConfig, 1);
+    
+    config->rgb_port = 8877;
+    config->thermal_port = 8878;
+    config->udp_host = "127.0.0.1";
+    config->base_port_high = 5000;
+    config->base_port_low = 5100;
+    config->num_streams = 12;
+    
+    config->rgb_width = 1280;
+    config->rgb_height = 720;
+    config->thermal_width = 640;
+    config->thermal_height = 480;
+    config->rgb_output_width = 1920;
+    config->rgb_output_height = 1080;
+    config->thermal_output_width = 384;
+    config->thermal_output_height = 288;
+
+    config->rgb_flip_method = 0;
+    
+    config->snapshot_width_rgb = 320;
+    config->snapshot_height_rgb = 180;
+    config->snapshot_width_thermal = 320;
+    config->snapshot_height_thermal = 240;
+    config->snapshot_path_rgb = "/home/nvidia/webrtc/cam0_snapshot.jpg";
+    config->snapshot_path_thermal = "/home/nvidia/webrtc/cam1_snapshot.jpg";
+    
+    config->bitrate_high_rgb = 2000000;
+    config->bitrate_low_rgb = 1000000;
+    config->bitrate_high_thermal = 4000000;
+    config->bitrate_low_thermal = 24000;
+    
+    config->model_config_rgb = "RGB_yoloV7.txt";
+    config->model_config_thermal = "Thermal_yoloV7.txt";
+    
+    config->queue_size = 5;
+    config->low_framerate = 5;
+    
+    return config;
+}
+
+gchar* build_udp_source(gint port, gint flip_method) {
+    return g_strdup_printf(
+        "udpsrc port=%d ! "
+        "application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96 ! "
+        "rtpjitterbuffer ! rtph264depay ! "
+        "h264parse config-interval=-1 ! "
+        "video/x-h264,stream-format=byte-stream,alignment=au ! "
+        "nvv4l2decoder disable-dpb=true enable-max-performance=true ! "
+        "nvvideoconvert flip-method=%d ! video/x-raw,format=NV12 ! "
+        "queue max-size-buffers=5 leaky=downstream",
+        port, flip_method
+    );
+}
+
+gchar* build_snapshot_branch(const gchar *tee_name, gint width, gint height, const gchar *location) {
+    return g_strdup_printf(
+        "%s. ! queue ! videoscale ! videorate ! "
+        "video/x-raw,width=%d,height=%d,framerate=1/2 ! "
+        "jpegenc ! multifilesink post-messages=true location=%s",
+        tee_name, width, height, location
+    );
+}
+
+gchar* build_inference_branch(const gchar *tee_name, const gchar *mux_name, 
+                             gint width, gint height, const gchar *config_file,
+                             const gchar *nvinfer_name, const gchar *postproc_name,
+                             const gchar *osd_name) {
+    return g_strdup_printf(
+        "%s. ! queue ! nvvideoconvert ! "
+        "video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d ! %s.sink_0 "
+        "nvstreammux name=%s batch-size=1 width=%d height=%d "
+        "live-source=1 batched-push-timeout=4000000 ! "
+        "nvinfer config-file-path=%s name=%s ! "
+        "nvof ! nvvideoconvert ! "
+        "dspostproc name=%s ! "
+        "nvdsosd name=%s display-clock=1 clock-color=0xFFFFFFFF "
+        "clock-font=Ubuntu clock-font-size=24",
+        tee_name, width, height, mux_name,
+        mux_name, width, height,
+        config_file, nvinfer_name,
+        postproc_name, osd_name
+    );
+}
+
+gchar* build_encoder_branch(gint output_width, gint output_height, 
+                           gint bitrate, const gchar *parse_name,
+                           const gchar *tee_name) {
+    return g_strdup_printf(
+        "nvvideoconvert ! video/x-raw,width=%d,height=%d ! "
+        "nvvideoconvert ! "
+        "nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=%d ! "
+        "video/x-h264,stream-format=byte-stream ! "
+        "h264parse config-interval=-1 name=%s ! "
+        "video/x-h264,stream-format=byte-stream,alignment=au ! "
+        "rtph264pay pt=96 config-interval=1 ! "
+        "queue max-size-buffers=5 ! tee name=%s",
+        output_width, output_height, bitrate, parse_name, tee_name
+    );
+}
+
+gchar* build_low_res_branch(const gchar *tee_name, gint framerate, 
+                           gint width, gint height, gint bitrate,
+                           const gchar *enc_tee_name) {
+    return g_strdup_printf(
+        "%s. ! queue ! videorate ! video/x-raw,framerate=%d/1 ! "
+        "videoscale ! video/x-raw,width=%d,height=%d ! "
+        "nvvideoconvert ! "
+        "nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=%d ! "
+        "rtph264pay pt=96 config-interval=1 ! "
+        "queue ! tee name=%s",
+        tee_name, framerate, width, height, bitrate, enc_tee_name
+    );
+}
+
+gchar* build_udp_sinks(PipelineConfig *config) {
+    GString *sinks = g_string_new("");
+    
+    // 고해상도 스트림
+    for (int i = 0; i < config->num_streams; i++) {
+        g_string_append_printf(sinks,
+            "video_enc_tee1_0. ! queue ! udpsink host=%s port=%d sync=false async=false ",
+            config->udp_host, config->base_port_high + i * 2);
+        
+        g_string_append_printf(sinks,
+            "video_enc_tee1_1. ! queue ! udpsink host=%s port=%d sync=false async=false ",
+            config->udp_host, config->base_port_high + i * 2 + 1);
+    }
+    
+    // 저해상도 스트림
+    for (int i = 0; i < config->num_streams; i++) {
+        g_string_append_printf(sinks,
+            "video_enc_tee2_0. ! queue ! udpsink host=%s port=%d sync=false async=false ",
+            config->udp_host, config->base_port_low + i * 2);
+        
+        g_string_append_printf(sinks,
+            "video_enc_tee2_1. ! queue ! udpsink host=%s port=%d sync=false async=false ",
+            config->udp_host, config->base_port_low + i * 2 + 1);
+    }
+    
+    return g_string_free(sinks, FALSE);
+}
+
+// 전체 파이프라인 빌더
+gchar* build_complete_pipeline(PipelineConfig *config) {
+    GString *pipeline = g_string_new("");
+    gchar *temp;
+    
+    // RGB 카메라 소스
+    temp = build_udp_source(config->rgb_port, config->rgb_flip_method);
+    g_string_append_printf(pipeline, "%s ! tee name=video_src_tee0 ", temp);
+    g_free(temp);
+    
+    // RGB 스냅샷
+    temp = build_snapshot_branch("video_src_tee0", 
+                                config->snapshot_width_rgb,
+                                config->snapshot_height_rgb,
+                                config->snapshot_path_rgb);
+    g_string_append_printf(pipeline, "%s ", temp);
+    g_free(temp);
+    
+    // RGB 추론
+    temp = build_inference_branch("video_src_tee0", "mux",
+                                 config->rgb_width, config->rgb_height,
+                                 config->model_config_rgb,
+                                 "nvinfer_1", "dspostproc_1", "nvosd_1");
+    g_string_append_printf(pipeline, "%s ! ", temp);
+    g_free(temp);
+    
+    // RGB 고해상도 인코더
+    temp = build_encoder_branch(config->rgb_output_width, config->rgb_output_height,
+                               config->bitrate_high_rgb,
+                               "h264parse_1", "video_enc_tee1_0");
+    g_string_append_printf(pipeline, "%s ", temp);
+    g_free(temp);
+    
+    // RGB 저해상도 브랜치
+    temp = build_low_res_branch("video_src_tee0", config->low_framerate,
+                               config->rgb_width, config->rgb_height,
+                               config->bitrate_low_rgb, "video_enc_tee2_0");
+    g_string_append_printf(pipeline, "%s ", temp);
+    g_free(temp);
+    
+    // Thermal 카메라 소스
+    temp = build_udp_source(config->thermal_port, 0);
+    g_string_append_printf(pipeline, "%s ! tee name=video_src_tee1 ", temp);
+    g_free(temp);
+    
+    // Thermal 스냅샷
+    temp = build_snapshot_branch("video_src_tee1",
+                                config->snapshot_width_thermal,
+                                config->snapshot_height_thermal,
+                                config->snapshot_path_thermal);
+    g_string_append_printf(pipeline, "%s ", temp);
+    g_free(temp);
+    
+    // Thermal 추론
+    temp = build_inference_branch("video_src_tee1", "thermal",
+                                 config->thermal_width, config->thermal_height,
+                                 config->model_config_thermal,
+                                 "nvinfer_2", "dspostproc_2", "nvosd_2");
+    g_string_append_printf(pipeline, "%s ! ", temp);
+    g_free(temp);
+    
+    // Thermal 고해상도 인코더 (실제로는 384x288)
+    temp = build_encoder_branch(config->thermal_output_width, config->thermal_output_height,
+                               config->bitrate_high_thermal,
+                               "h264parse_2", "video_enc_tee1_1");
+    g_string_append_printf(pipeline, "%s ", temp);
+    g_free(temp);
+    
+    // Thermal 저해상도 브랜치
+    temp = build_low_res_branch("video_src_tee1", config->low_framerate,
+                               384, 288,
+                               config->bitrate_low_thermal, "video_enc_tee2_1");
+    g_string_append_printf(pipeline, "%s ", temp);
+    g_free(temp);
+    
+    // UDP 싱크들
+    temp = build_udp_sinks(config);
+    g_string_append(pipeline, temp);
+    g_free(temp);
+    
+    return g_string_free(pipeline, FALSE);
 }

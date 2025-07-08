@@ -435,6 +435,8 @@ gchar *image_to_base64(const gchar *source)
 
   // glog_trace("image_to_base64 source=%s, index=%d\n", g_config.snapshot_path, index);
 
+  printf("image_to_base64 source=%s, index=%d\n", g_config.snapshot_path, index);
+
   sprintf(jpegpath, "%s/cam%d_snapshot.jpg", g_config.snapshot_path, index);
   int input_len;
   unsigned char *input = read_jpeg(jpegpath, &input_len);
@@ -865,6 +867,8 @@ gboolean process_message_cmd(gJSONObj *jsonObj)
 
     g_frame_count[RGB_CAM] = 0;
     g_frame_count[THERMAL_CAM] = 0;
+
+    printf("g_setting.analysis_status = %d\n", g_setting.analysis_status);
 
     update_setting(g_config.device_setting_path, &g_setting);
   }

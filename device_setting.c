@@ -491,6 +491,7 @@ static gchar device_setting_template_string_json[] = "{\n\
 
 gboolean update_setting(const char *file_name, DeviceSetting* setting)
 {
+  printf("update_setting: %s\n", file_name);
  static pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
  
  pthread_mutex_lock(&file_mutex);

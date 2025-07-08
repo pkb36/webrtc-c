@@ -12,6 +12,10 @@
         "time.h": "c",
         "event_recorder.h": "c",
         "curllib.h": "c",
-        "circular_buffer.h": "c"
+        "circular_buffer.h": "c",
+        "array": "c",
+        "string": "c",
+        "string_view": "c",
+        "ranges": "c"
     }
 }

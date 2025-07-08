@@ -180,7 +180,7 @@ gboolean add_peer_to_pipeline (const gchar * peer_id, const gchar * channel)    
     snprintf(strtemp[0], 64, "--stream_cnt=%d", 1);       //LJH, 1개씩 해서 필요에 따라 여러번 호출될 수 있음.
     snprintf(strtemp[1], 64, "--stream_base_port=%d", stream_base_port); 
     snprintf(strtemp[2], 64, "--comm_socket_port=%d", comm_socket_port); 
-    snprintf(strtemp[3], 64, "--codec_name=%s", g_codec_name); 
+    snprintf(strtemp[3], 64, "--codec_name=%s", "H264"); 
     snprintf(peer_id_arg, 256, "--peer_id=%s", peer_id); 
     char *args[]={programName,strtemp[0], strtemp[1] ,strtemp[2], strtemp[3],peer_id_arg, NULL};
     execvp(programName, args);

@@ -185,6 +185,7 @@ BboxColor get_object_color(guint camera_id, guint object_id, gint class_id)
 
 void set_process_analysis(gboolean OnOff)
 {
+	printf("set_process_analysis OnOff=%d\n", OnOff);
     if (OnOff == 0)
         check_events_for_notification(0, 1);
 
@@ -220,6 +221,8 @@ void set_process_analysis(gboolean OnOff)
             all_success = FALSE;
         }
     }
+
+	printf("set_process_analysis: OnOff=%d, all_success=%d\n", OnOff, all_success);
     
     if (!all_success) {
         glog_error("Some elements failed to update\n");
