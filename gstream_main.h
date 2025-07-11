@@ -102,7 +102,7 @@ void start_heartbit(int timeout);
 void kill_heartbit();
 
 PipelineConfig *get_default_config();
-gchar *build_udp_source(gint port, gint flip_method);
+gchar *build_udp_source(gint port, gint flip_method, gint width, gint height);
 gchar *build_snapshot_branch(const gchar *tee_name, gint width, gint height, const gchar *location);
 gchar *build_inference_branch(const gchar *tee_name, const gchar *mux_name,
 							  gint width, gint height, const gchar *config_file,

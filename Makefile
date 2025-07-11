@@ -15,6 +15,8 @@ OBJ_DIR := $(BUILD_DIR)/obj
 # 디렉토리 생성
 $(shell mkdir -p $(BUILD_DIR) $(OBJ_DIR))
 
+DEST_DIR ?= /home/nvidia/webrtc
+
 # 오브젝트 파일들
 COMMON_OBJS := $(OBJ_DIR)/log.o $(OBJ_DIR)/log_wrapper.o
 GSTREAM_OBJS := $(OBJ_DIR)/gstream_main.o $(OBJ_DIR)/config.o $(OBJ_DIR)/serial_comm.o $(OBJ_DIR)/socket_comm.o \
@@ -67,6 +69,15 @@ install: $(TARGETS)
 	cp $(BUILD_DIR)/curllib_test ./
 	cp $(BUILD_DIR)/disk_check ./
 
+install-to: $(TARGETS)
+	@echo "Installing to $(DEST_DIR)..."
+	@mkdir -p $(DEST_DIR)
+	cp $(BUILD_DIR)/gstream_main $(DEST_DIR)/
+	cp $(BUILD_DIR)/webrtc_sender $(DEST_DIR)/
+	cp $(BUILD_DIR)/curllib_test $(DEST_DIR)/
+	cp $(BUILD_DIR)/disk_check $(DEST_DIR)/
+	@echo "Installation complete!"
+	
 # 정리
 clean:
 	rm -rf $(BUILD_DIR)

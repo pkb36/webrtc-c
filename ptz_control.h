@@ -91,6 +91,10 @@ void parse_target_position(unsigned char* ptz_data, PTZPosition* pos);
 gboolean is_position_reached(PTZPosition* current, PTZPosition* target, gboolean check_zoom);
 gboolean is_ptz_motion_stopped_with_position_check(PTZPosition* target_pos);
 int wait_for_ptz_completion(int preset_index, int timeout_sec);
+
+const AutoPTZState* get_auto_ptz_state(void);
+AutoPTZState get_auto_ptz_state_copy(void);
+
 // 전역 변수
 extern int ptz_err_code;
 extern int g_move_speed;

@@ -936,3 +936,11 @@ int wait_for_ptz_completion(int preset_index, int timeout_sec) {
     glog_info("PTZ motion timeout after %d seconds\n", timeout_sec);
     return timeout_sec;
 }
+
+const AutoPTZState* get_auto_ptz_state(void) {
+    return &g_auto_ptz_state;
+}
+
+AutoPTZState get_auto_ptz_state_copy(void) {
+    return g_auto_ptz_state;
+}

@@ -1,0 +1,9 @@
+{
+  "server_url": "http://121.67.120.198:5000",
+  "local_record_path": "/home/nvidia/data",
+  "transfer_interval_minutes": 30,
+  "delete_after_transfer": false,
+  "file_age_minutes": 10,
+  "chunk_size_mb": 10,
+  "device_id": "jetson_nx_01"
+}

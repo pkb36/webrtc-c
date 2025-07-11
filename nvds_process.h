@@ -177,6 +177,8 @@ void setup_nv_analysis();
 void endup_nv_analysis();
 void check_events_for_notification(int cam_idx, int init);
 int get_opt_flow_object(int cam_idx, int obj_id);
+void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta, 
+                      NvDsBatchMeta *batch_meta, int cam_idx, int temp_display);
 gboolean send_event_to_recorder_simple(int class_id, int camera_id);
 
 BboxColor get_object_color(guint camera_id, guint object_id, gint class_id);

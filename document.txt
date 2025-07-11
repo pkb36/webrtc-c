@@ -1,0 +1,1 @@
+make install-to DEST_DIR=/home/nvidia/build

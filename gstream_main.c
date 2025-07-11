@@ -486,7 +486,7 @@ static gboolean start_pipeline(void)
     config->model_config_thermal = g_config.model_config[THERMAL_CAM];
 
     pipeline_string = build_complete_pipeline(config);
-    g_print("Pipeline length: %lu\n", strlen(pipeline_string));
+    g_print("Pipeline : %s\n", pipeline_string);
     
     g_pipeline = gst_parse_launch(pipeline_string, &error);
 
@@ -1433,12 +1433,12 @@ PipelineConfig* get_default_config() {
     config->base_port_low = 5100;
     config->num_streams = 12;
     
-    config->rgb_width = 1280;
-    config->rgb_height = 720;
-    config->thermal_width = 640;
-    config->thermal_height = 480;
-    config->rgb_output_width = 1280;
-    config->rgb_output_height = 720;
+    config->rgb_width = 1920;
+    config->rgb_height = 1080;
+    config->thermal_width = 384;
+    config->thermal_height = 288;
+    config->rgb_output_width = 1920;
+    config->rgb_output_height = 1080;
     config->thermal_output_width = 384;
     config->thermal_output_height = 288;
 
@@ -1465,17 +1465,14 @@ PipelineConfig* get_default_config() {
     return config;
 }
 
-gchar* build_udp_source(gint port, gint flip_method) {
+gchar* build_udp_source(gint port, gint flip_method, gint width, gint height) {
     return g_strdup_printf(
         "udpsrc port=%d ! "
-        "application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96 ! "
-        "rtpjitterbuffer ! rtph264depay ! "
-        "h264parse config-interval=-1 ! "
-        "video/x-h264,stream-format=byte-stream,alignment=au ! "
-        "nvv4l2decoder disable-dpb=true enable-max-performance=true ! "
+        "application/x-rtp,media=video,clock-rate=90000,encoding-name=RAW,sampling=YCbCr-4:2:0,width=(string)%d,height=(string)%d,depth=(string)8 ! "
+        "rtpvrawdepay ! "
         "nvvideoconvert flip-method=%d ! video/x-raw,format=NV12 ! "
         "queue max-size-buffers=5 leaky=downstream",
-        port, flip_method
+        port, width, height, flip_method
     );
 }
 
@@ -1500,8 +1497,7 @@ gchar* build_inference_branch(const gchar *tee_name, const gchar *mux_name,
         "nvinfer config-file-path=%s name=%s ! "
         "nvof ! nvvideoconvert ! "
         "dspostproc name=%s ! "
-        "nvdsosd name=%s display-clock=1 clock-color=0xFFFFFFFF "
-        "clock-font=Ubuntu clock-font-size=24",
+        "nvdsosd name=%s display-clock=0",
         tee_name, width, height, mux_name,
         mux_name, width, height,
         config_file, nvinfer_name,
@@ -1513,29 +1509,38 @@ gchar* build_encoder_branch(gint output_width, gint output_height,
                            gint bitrate, const gchar *parse_name,
                            const gchar *tee_name) {
     return g_strdup_printf(
-        "nvvideoconvert ! video/x-raw,width=%d,height=%d ! "
-        "nvvideoconvert ! "
-        "nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=%d ! "
+        "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d ! "
+        "nvv4l2h264enc bitrate=4000000 peak-bitrate=8000000 control-rate=1 preset-level=FastPreset idrinterval=5 ! "
         "video/x-h264,stream-format=byte-stream ! "
         "h264parse config-interval=-1 name=%s ! "
         "video/x-h264,stream-format=byte-stream,alignment=au ! "
         "rtph264pay pt=96 config-interval=1 ! "
         "queue max-size-buffers=5 ! tee name=%s",
-        output_width, output_height, bitrate, parse_name, tee_name
+        output_width, output_height, parse_name, tee_name
     );
 }
 
 gchar* build_low_res_branch(const gchar *tee_name, gint framerate, 
                            gint width, gint height, gint bitrate,
                            const gchar *enc_tee_name) {
+    // return g_strdup_printf(
+    //     "%s. ! queue ! videorate ! video/x-raw,framerate=%d/1 ! "
+    //     "videoscale ! video/x-raw,width=%d,height=%d ! "
+    //     "nvvideoconvert ! "
+    //     "nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=%d ! "
+    //     "rtph264pay pt=96 config-interval=1 ! "
+    //     "queue ! tee name=%s",
+    //     tee_name, framerate, width, height, bitrate, enc_tee_name
+    // );
     return g_strdup_printf(
-        "%s. ! queue ! videorate ! video/x-raw,framerate=%d/1 ! "
-        "videoscale ! video/x-raw,width=%d,height=%d ! "
-        "nvvideoconvert ! "
-        "nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=%d ! "
+        "%s. ! queue ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d ! "
+        "nvv4l2h264enc bitrate=4000000 peak-bitrate=8000000 control-rate=1 preset-level=FastPreset ! "
+        "video/x-h264,stream-format=byte-stream ! "
+        "h264parse config-interval=-1 ! "
+        "video/x-h264,stream-format=byte-stream,alignment=au ! "
         "rtph264pay pt=96 config-interval=1 ! "
-        "queue ! tee name=%s",
-        tee_name, framerate, width, height, bitrate, enc_tee_name
+        "queue max-size-buffers=5 ! tee name=%s",
+        tee_name, width, height, enc_tee_name
     );
 }
 
@@ -1573,7 +1578,7 @@ gchar* build_complete_pipeline(PipelineConfig *config) {
     gchar *temp;
     
     // RGB 카메라 소스
-    temp = build_udp_source(config->rgb_port, config->rgb_flip_method);
+    temp = build_udp_source(config->rgb_port, config->rgb_flip_method, config->rgb_width, config->rgb_height);
     g_string_append_printf(pipeline, "%s ! tee name=video_src_tee0 ", temp);
     g_free(temp);
     
@@ -1608,7 +1613,7 @@ gchar* build_complete_pipeline(PipelineConfig *config) {
     g_free(temp);
     
     // Thermal 카메라 소스
-    temp = build_udp_source(config->thermal_port, 0);
+    temp = build_udp_source(config->thermal_port, 0, config->thermal_width, config->thermal_height);
     g_string_append_printf(pipeline, "%s ! tee name=video_src_tee1 ", temp);
     g_free(temp);
     

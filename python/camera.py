@@ -136,13 +136,8 @@ class CameraRecorder:
         if not self.recording_enabled:
             pipeline_str = f"""
                 {camera_source} !
-                videoconvert ! 
-                video/x-raw, format=I420 !
-                nvvidconv ! 
-                video/x-raw(memory:NVMM), format=I420 ! 
-                {send_encoder_settings} !
-                h264parse !
-                rtph264pay config-interval=1 pt=96 !
+                queue ! videoconvert name=videoconvert0 ! video/x-raw,format=I420 ! 
+                rtpvrawpay mtu=65000 !
                 udpsink host={self.config['udp_host']} port={self.config['udp_port']} sync=false async=false
             """
             logger.warning(f"{self.config['name']}: 스트리밍 전용 파이프라인 생성")
@@ -154,7 +149,7 @@ class CameraRecorder:
                 tee name=t
                 
                 t. ! queue max-size-buffers=100 max-size-bytes=0 max-size-time=0 ! 
-                videoconvert ! 
+                videoconvert name=videoconvert0 ! 
                 video/x-raw, format=I420 !
                 nvvidconv ! 
                 video/x-raw(memory:NVMM), format=I420 ! 
@@ -165,14 +160,8 @@ class CameraRecorder:
                     max-size-time=300000000000 
                     mux-properties="properties,reserved-moov-update-period=1000000000"
                 
-                t. ! queue max-size-buffers=100 max-size-bytes=0 max-size-time=0 ! 
-                videoconvert ! 
-                video/x-raw, format=I420 !
-                nvvidconv ! 
-                video/x-raw(memory:NVMM), format=I420 ! 
-                {send_encoder_settings} !
-                h264parse !
-                rtph264pay config-interval=1 pt=96 !
+                t. ! queue ! videoconvert ! video/x-raw,format=I420 ! 
+                rtpvrawpay mtu=65000 !
                 udpsink host={self.config['udp_host']} port={self.config['udp_port']} sync=false async=false
             """
         
@@ -181,14 +170,14 @@ class CameraRecorder:
         
         self.pipeline = Gst.parse_launch(pipeline_str)
         
-        h264parse = self.pipeline.get_by_name('h264parse0')  # 또는 명시적으로 name 지정
-        if not h264parse:
-            # 파이프라인에서 h264parse 찾기
-            elements = self.pipeline.iterate_elements()
-            for element in elements:
-                if 'h264parse' in element.get_name():
-                    h264parse = element
-                    break
+        h264parse = self.pipeline.get_by_name('videoconvert0')  # 또는 명시적으로 name 지정
+        # if not h264parse:
+        #     # 파이프라인에서 h264parse 찾기
+        #     elements = self.pipeline.iterate_elements()
+        #     for element in elements:
+        #         if 'h264parse' in element.get_name():
+        #             h264parse = element
+        #             break
         
         if h264parse:
             # src pad에 프로브 추가
@@ -246,6 +235,9 @@ class CameraRecorder:
         # 프레임 수신 시간 업데이트
         self.last_frame_time = datetime.now()
         
+        # if self.config['name'] == "RGB_Camera":
+        print(f"{self.config['name']}: 프레임 수신 - {self.frame_count} (시간: {self.last_frame_time})")
+
         # 주기적인 로그 (선택사항)
         self.frame_count += 1
         if self.frame_count % 1000 == 0:
@@ -260,9 +252,9 @@ class CameraRecorder:
             return (
                 f"v4l2src device=/dev/video{self.config['device_id']} ! "
                 f"video/x-raw, format=YUY2, width=384, height=290, "
-                f"height={self.config['height']} ! "
+                f"height={self.config['height']},framerate=50/1 ! "
                 f"videocrop top=1 bottom=1 ! "
-                f"videorate drop-only=true max-rate=10 ! "  # 10fps 초과분만 드롭
+                f"videorate ! "  # 10fps 초과분만 드롭
                 f"video/x-raw, framerate=10/1"
             )
         else:
@@ -270,8 +262,8 @@ class CameraRecorder:
             return (
                 f"v4l2src device=/dev/video{self.config['device_id']} ! "
                 f"video/x-raw, format=YUY2, width={self.config['width']}, "
-                f"height={self.config['height']} ! "
-                f"videorate drop-only=true max-rate=10 ! "  # 10fps 초과분만 드롭
+                f"height={self.config['height']}, framerate=30/1 ! "
+                f"videorate ! "  # 10fps 초과분만 드롭
                 f"video/x-raw, framerate=10/1"
             )
 
@@ -328,14 +320,9 @@ class CameraRecorder:
         """인코더 설정"""
         # H.264 인코더 설정 (키프레임 간격 30 = 1초)
         return (
-            f"nvv4l2h264enc bitrate=4000000 preset-level=2 "
-            f"control-rate=1 "
-            f"num-Ref-Frames=2 "
-            f"insert-vui=true "
+            f"nvv4l2h264enc bitrate=8000000 preset-level=2 "
             f"idrinterval=10 insert-sps-pps=true "
-            f"num-B-Frames=0 "              # B프레임 비활성화 (지연 감소)
-            f"num-Ref-Frames=3 " 
-            f"profile=4 maxperf-enable=true"  # High profile, 최대 성능
+            f"profile=2 maxperf-enable=true"  # High profile, 최대 성능
         )
         
     def _is_keyframe(self, data):

@@ -29,6 +29,7 @@
 #include "nvds_opticalflow_meta.h"
 #include "nvds_utils.h"
 #include "circular_buffer.h"
+#include "ptz_control.h"
 
 static int *g_cam_indices = NULL;
 #define MAX_OPT_FLOW_ITERATIONS 1000
@@ -49,6 +50,15 @@ Timer timers[MAX_PTZ_PRESET];
 static int g_event_sender_running = 1;
 ObjMonitor obj_info[NUM_CAMS][NUM_OBJS];
 
+typedef struct {
+    double last_event_time[NUM_CLASSES][NUM_CAMS];
+    double throttle_interval;  // 필터링 간격 (초)
+} EventThrottle;
+
+static EventThrottle g_event_throttle = {
+    .throttle_interval = 60.0  // 10초 간격
+};
+
 int threshold_event_duration[NUM_CLASSES] =
 	{
 		0,	// NORMAL
@@ -59,7 +69,7 @@ int threshold_event_duration[NUM_CLASSES] =
 };
 
 float threshold_confidence[NUM_CLASSES] =
-	{
+{
 		0.2, // NORMAL
 		0.8, // HEAT
 		0.8, // FLIP
@@ -183,6 +193,18 @@ void set_process_analysis(gboolean OnOff)
     for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
     {
         char element_name[32];
+		GstElement *nvinfer;
+		sprintf(element_name, "nvinfer_%d", cam_idx+1);
+		nvinfer = gst_bin_get_by_name (GST_BIN (g_pipeline), element_name);
+		if (nvinfer == NULL){
+			glog_trace ("Fail get %s element\n", element_name);
+			continue;
+		}
+
+		gint interval = OnOff ? g_setting.nv_interval : G_MAXINT;
+		g_object_set(G_OBJECT(nvinfer), "interval", interval, NULL);
+		g_clear_object (&nvinfer);
+
         GstElement *dspostproc = NULL;
         
         // dspostproc 처리
@@ -230,11 +252,25 @@ int is_process_running(const char *process_name)
 
 gboolean send_event_to_recorder_simple(int class_id, int camera_id)
 {
+	const AutoPTZState* ptz_state = get_auto_ptz_state();
+
 	struct timespec ts;
-	clock_gettime(CLOCK_REALTIME, &ts);
-	double event_time = ts.tv_sec + ts.tv_nsec / 1e9;
-	
+    clock_gettime(CLOCK_REALTIME, &ts);
+    double event_time = ts.tv_sec + ts.tv_nsec / 1e9;
+
+	double time_diff = event_time - g_event_throttle.last_event_time[class_id][camera_id];
+
+	// if (ptz_state->is_running == FALSE && time_diff < g_event_throttle.throttle_interval) {
+	if (time_diff < g_event_throttle.throttle_interval) {
+        // 너무 빈번한 이벤트는 필터링
+        glog_debug("Event filtered: class=%d, camera=%d, time_diff=%.1f\n", 
+                   class_id, camera_id, time_diff);
+        return FALSE;
+    }
+
 	on_event_detected(camera_id, class_id, event_time);
+
+	g_event_throttle.last_event_time[class_id][camera_id] = event_time;
 
 	return TRUE;
 }
@@ -1180,6 +1216,97 @@ void set_temp_bbox_color(NvDsObjectMeta *obj_meta)
 	}
 }
 
+// nvds_process.c에 추가할 함수
+static void add_clock_overlay(NvDsFrameMeta *frame_meta, NvDsBatchMeta *batch_meta, int cam_idx)
+{
+    // 시계용 DisplayMeta 생성
+    NvDsDisplayMeta *clock_meta = nvds_acquire_display_meta_from_pool(batch_meta);
+    if (!clock_meta) {
+        return;
+    }
+    
+    // 현재 시간 가져오기
+    time_t rawtime;
+    struct tm *timeinfo;
+    char time_str[64];
+    
+    time(&rawtime);
+    timeinfo = localtime(&rawtime);
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", timeinfo);
+    
+    // 프레임 해상도
+    int frame_width = frame_meta->source_frame_width;
+    int frame_height = frame_meta->source_frame_height;
+    
+    if (frame_width == 0 || frame_height == 0) {
+        if (cam_idx == THERMAL_CAM) {
+            frame_width = 384;
+            frame_height = 288;
+        } else {
+            frame_width = 1920;
+            frame_height = 1080;
+        }
+    }
+    
+    // 시계 위치 및 크기 설정
+    int clock_x, clock_y, clock_font_size;
+    
+    if (cam_idx == THERMAL_CAM) {
+        clock_x = 5;
+        clock_y = 5;
+        clock_font_size = 12;
+    } else {
+        clock_x = 10;
+        clock_y = 15;
+        clock_font_size = 36;
+    }
+    
+    // 8방향 외곽선 오프셋
+    int offsets[][2] = {
+        {-1, -1}, {0, -1}, {1, -1},
+        {-1,  0},          {1,  0},
+        {-1,  1}, {0,  1}, {1,  1}
+    };
+    
+    // 배경 사각형 추가
+    // clock_meta->num_rects = 1;
+    // NvOSD_RectParams *clock_bg = &clock_meta->rect_params[0];
+    // clock_bg->left = clock_x - 10;
+    // clock_bg->top = clock_y - 5;
+    // clock_bg->width = strlen(time_str) * (clock_font_size * 0.6) + 20;
+    // clock_bg->height = clock_font_size + 10;
+    // clock_bg->has_bg_color = 1;
+    // clock_bg->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 0.4};
+    // clock_bg->border_width = 0;
+    
+    // 텍스트 설정 (8개 외곽선 + 1개 중앙)
+    clock_meta->num_labels = 9;
+    
+    // 검은색 외곽선 (8방향)
+    for (int i = 0; i < 8; i++) {
+        NvOSD_TextParams *outline = &clock_meta->text_params[i];
+        outline->display_text = g_strdup(time_str);
+        outline->x_offset = clock_x + offsets[i][0];
+        outline->y_offset = clock_y + offsets[i][1];
+        outline->font_params.font_name = "Ubuntu";
+        outline->font_params.font_size = clock_font_size;
+        outline->font_params.font_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 1.0};
+        outline->set_bg_clr = 0;
+    }
+    
+    // 흰색 중앙 텍스트
+    NvOSD_TextParams *center = &clock_meta->text_params[8];
+    center->display_text = g_strdup(time_str);
+    center->x_offset = clock_x;
+    center->y_offset = clock_y;
+    center->font_params.font_name = "Ubuntu";
+    center->font_params.font_size = clock_font_size;
+    center->font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0};
+    center->set_bg_clr = 0;
+    
+    nvds_add_display_meta_to_frame(frame_meta, clock_meta);
+}
+
 /* osd_sink_pad_buffer_probe  will extract metadata received on OSD sink pad
  * and update params for drawing rectangle, object information etc. */
 static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u_data) // LJH, this function is called per frame
@@ -1232,6 +1359,8 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 	for (l_frame = batch_meta->frame_meta_list; l_frame != NULL; l_frame = l_frame->next)
 	{
 		NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)(l_frame->data);
+
+		add_clock_overlay(frame_meta, batch_meta, cam_idx);
 
 		for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next)
 		{
@@ -1328,7 +1457,7 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 					}
 					if (g_setting.display_temp || do_temp_display)
 					{
-						temp_display_text(obj_meta);
+						// temp_display_text(obj_meta);
 					}
 					set_temp_bbox_color(obj_meta); // if temperature is too high then set color
 				}
@@ -1352,6 +1481,7 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 				gather_event(event_class_id, obj_meta->object_id, cam_idx);
 			}
 #endif
+			set_custom_label(obj_meta, frame_meta, batch_meta, cam_idx, do_temp_display);
 		}
 
 #if TEMP_NOTI_TEST
@@ -1411,6 +1541,166 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 #endif
 
 	return GST_PAD_PROBE_OK;
+}
+
+void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta, 
+                      NvDsBatchMeta *batch_meta, int cam_idx, int temp_display)
+{
+    // 박스가 숨겨져 있으면 라벨도 표시 안 함
+    if (obj_meta->rect_params.border_color.alpha == 0) {
+        return;
+    }
+    
+    // DisplayMeta 할당
+    NvDsDisplayMeta *display_meta = nvds_acquire_display_meta_from_pool(batch_meta);
+    if (!display_meta) {
+        glog_error("Failed to acquire display meta\n");
+        return;
+    }
+
+
+    
+    // 프레임 해상도 가져오기
+    int frame_width = frame_meta->source_frame_width;
+    int frame_height = frame_meta->source_frame_height;
+    
+    // 해상도가 0인 경우 기본값 사용
+    if (frame_width == 0 || frame_height == 0) {
+        // 카메라별 기본 해상도
+        if (cam_idx == THERMAL_CAM) {
+            frame_width = 384;
+            frame_height = 288;
+        } else {
+            frame_width = 1920;
+            frame_height = 1080;
+        }
+    }
+    
+    // 라벨 텍스트 생성
+    char label_text[256];
+    if (cam_idx == THERMAL_CAM && 
+        (g_setting.display_temp || temp_display) &&
+        obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp > 0) {
+        sprintf(label_text, "[%d°C]", 
+                obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp);
+    } else {
+        sprintf(label_text, "%s %.0f%%", 
+                obj_meta->obj_label, 
+                obj_meta->confidence * 100);
+    }
+    
+    // 해상도 기반 폰트 크기 계산
+    int base_font_size;
+    float scale_factor;
+    
+    if (cam_idx == THERMAL_CAM) {
+        // 열화상은 작은 해상도이므로 다른 비율 적용
+        base_font_size = 10;
+        scale_factor = frame_height / 288.0;
+    } else {
+        base_font_size = 14;
+        scale_factor = frame_height / 1080.0;
+    }
+    
+    int font_size = (int)(base_font_size * scale_factor);
+    font_size = MAX(8, MIN(font_size, 20));  // 8~20 범위로 제한
+    
+    // 텍스트 크기 계산 개선
+    // 폰트 크기에 기반한 문자 폭 계산
+    float char_width = font_size * 0.55;  // 폰트 크기의 55%
+    
+    // 텍스트 길이 계산 (멀티바이트 문자 고려)
+    int display_len = 0;
+    for (int i = 0; label_text[i] != '\0'; i++) {
+        if ((unsigned char)label_text[i] < 128) {
+            display_len++;  // ASCII 문자
+        } else if (label_text[i] == '[' || label_text[i] == ']') {
+            display_len++;  // 대괄호
+        }
+        // °와 C는 별도로 카운트 (°는 멀티바이트)
+    }
+    
+    // 온도 표시의 경우 특별 처리
+    if (cam_idx == THERMAL_CAM && strstr(label_text, "°C")) {
+        display_len = strlen(label_text) - 2 + 1;  // °C를 1문자로 계산
+    }
+    
+    // 패딩 계산
+    int padding = (int)(font_size * 0.8);  // 폰트 크기에 비례
+    int text_width = (int)(display_len * char_width) + padding * 2;
+    int text_height = (int)(font_size * 1.6);  // 폰트의 1.6배
+    
+    // 최소 크기 보장
+    text_width = MAX(text_width, 40);
+    text_height = MAX(text_height, 16);
+    
+    // 1. 라벨 배경 사각형 설정
+    display_meta->num_rects = 1;
+	NvOSD_RectParams *bg_rect = &display_meta->rect_params[0];
+
+	// 위치 설정 (바운딩 박스 왼쪽 위)
+	bg_rect->left = obj_meta->rect_params.left;  // 왼쪽 정렬
+	bg_rect->top = obj_meta->rect_params.top - text_height - 2;
+	bg_rect->width = text_width;
+	bg_rect->height = text_height;
+    
+    // 배경 활성화
+    bg_rect->has_bg_color = 1;
+    bg_rect->border_width = 0;
+    
+    // 바운딩 박스 색상에 따라 라벨 배경색 설정
+    NvOSD_ColorParams box_color = obj_meta->rect_params.border_color;
+    
+    if (box_color.red > 0.5 && box_color.green < 0.5 && box_color.blue < 0.5) {
+        bg_rect->bg_color = (NvOSD_ColorParams){0.7, 0.0, 0.0, 0.8};
+    } else if (box_color.green > 0.5 && box_color.red < 0.5 && box_color.blue < 0.5) {
+        bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.5, 0.0, 0.8};
+    } else if (box_color.blue > 0.5 && box_color.red < 0.5 && box_color.green < 0.5) {
+        bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.7, 0.8};
+    } else if (box_color.red > 0.5 && box_color.green > 0.5) {
+        bg_rect->bg_color = (NvOSD_ColorParams){0.7, 0.7, 0.0, 0.8};
+    } else {
+        bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 0.8};
+    }
+    
+    // 2. 라벨 텍스트 설정
+    display_meta->num_labels = 1;
+    NvOSD_TextParams *text_params = &display_meta->text_params[0];
+    
+    text_params->display_text = g_strdup(label_text);
+    
+    // 텍스트 위치를 배경 중앙에 맞춤
+    text_params->x_offset = bg_rect->left;
+    text_params->y_offset = bg_rect->top;
+    
+    // 폰트 설정
+    text_params->font_params.font_name = "Arial";
+    text_params->font_params.font_size = font_size;
+    text_params->font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0};
+    
+    // 텍스트 배경 비활성화
+    text_params->set_bg_clr = 0;
+    
+    // 3. 화면 밖으로 나가지 않도록 조정
+    if (bg_rect->top < 0) {
+        bg_rect->top = obj_meta->rect_params.top + obj_meta->rect_params.height + 2;
+        text_params->y_offset = bg_rect->top + (text_height - font_size) / 2;
+    }
+    
+    // 좌우 경계 체크
+    if (bg_rect->left < 0) {
+        bg_rect->left = 0;
+        text_params->x_offset = bg_rect->left + padding;
+    } else if (bg_rect->left + bg_rect->width > frame_width) {
+        bg_rect->left = frame_width - bg_rect->width;
+        text_params->x_offset = bg_rect->left + padding;
+    }
+    
+    // 기존 텍스트 숨기기
+    obj_meta->text_params.display_text[0] = 0;
+    
+    // DisplayMeta를 프레임에 추가
+    nvds_add_display_meta_to_frame(frame_meta, display_meta);
 }
 
 static GstPadProbeReturn
@@ -1534,7 +1824,7 @@ void setup_nv_analysis()
 		} else {
 			g_warning("Could not find h264parse_%d element\n", cam_idx);
 		}
-		
+
 		g_free(h264_element_name);
 		gst_object_unref(h264parse);
 

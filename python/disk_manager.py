@@ -16,7 +16,7 @@ import logging
 import argparse
 
 class DiskCleaner:
-    def __init__(self, target_path="/home/nvidia/data", min_free_percent=20.0, min_free_gb=50.0,
+    def __init__(self, target_path="/home/nvidia/data", min_free_percent=5.0, min_free_gb=2.0,
                  log_path="/home/nvidia/webrtc/logs", log_retention_days=7):
         """
         디스크 정리기 초기화
@@ -314,8 +314,8 @@ class DiskCleaner:
 def main():
     parser = argparse.ArgumentParser(description='디스크 용량 관리 도구')
     parser.add_argument('--path', default='/home/nvidia/data', help='관리할 경로')
-    parser.add_argument('--min-free-gb', type=float, default=50.0, help='최소 여유 공간 (GB)')
-    parser.add_argument('--min-free-percent', type=float, default=20.0, help='최소 여유 공간 (%)')
+    parser.add_argument('--min-free-gb', type=float, default=2.0, help='최소 여유 공간 (GB)')
+    parser.add_argument('--min-free-percent', type=float, default=2.0, help='최소 여유 공간 (%)')
     parser.add_argument('--log-path', default='/home/nvidia/webrtc/logs', help='로그 파일 경로')
     parser.add_argument('--log-retention', type=int, default=7, help='로그 보관 일수')
     parser.add_argument('--dry-run', action='store_true', help='실제로 삭제하지 않고 시뮬레이션')

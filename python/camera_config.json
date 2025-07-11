@@ -1,5 +1,5 @@
 {
-  "output_base_dir": "/home/nvidia/data",
+  "output_base_dir": "/nvmeroot/nvidia/data",
   "cameras": [
     {
       "name": "RGB_Camera",
