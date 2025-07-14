@@ -865,16 +865,226 @@ float map_rgba_to_temp(unsigned char r, unsigned char g, unsigned char b)
 	return temp;
 }
 
+float map_rgba_to_temp_livestock(unsigned char r, unsigned char g, unsigned char b)
+{
+    float brightness = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
+    
+    // 베지어 곡선 제어점
+    // P0(0, 20), P1(0.3, 30), P2(0.7, 38), P3(1, 42)
+    float t = brightness;
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float mt = 1.0f - t;
+    float mt2 = mt * mt;
+    float mt3 = mt2 * mt;
+    
+    // 3차 베지어 곡선
+    float temp = 20.0f * mt3 +
+                 3.0f * 30.0f * mt2 * t +
+                 3.0f * 38.0f * mt * t2 +
+                 42.0f * t3;
+    
+    return temp;
+}
+
 // Function to get RGBA color and map it to temp
 float get_pixel_temp(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
 {
-	// Calculate the temp based on RGBA
-	float temp = map_rgba_to_temp(r, g, b);
+    // 단순히 밝기를 온도 지표로 사용
+    float brightness = (r + g + b) / 3.0f;
+    
+    // 0-100 범위로 정규화 (실제 온도가 아닌 상대값)
+    return brightness * 100.0f / 255.0f;
+}
 
-	// Print the temp value
-	// glog_trace("Pixel Temp.:%.2f°C\n", temp);
+// 전체 소들의 온도 통계 계산 (매 프레임)
+void calculate_herd_temperature_stats(HerdTempStats *stats)
+{
+    stats->avg_temp = 0;
+    stats->total_cows = 0;
+    stats->std_dev = 0;
+    
+    float temp_sum = 0;
+    float temps[NUM_OBJS];
+    int count = 0;
+    
+    // 유효한 온도를 가진 소만 포함
+    for (int i = 0; i < NUM_OBJS; i++) {
+        // bbox_temp가 유효한 범위인지 확인
+        if (obj_info[THERMAL_CAM][i].bbox_temp > g_setting.threshold_under_temp && 
+            obj_info[THERMAL_CAM][i].bbox_temp < g_setting.threshold_upper_temp &&
+            obj_info[THERMAL_CAM][i].bbox_temp > 0) {
+            
+            // 추가 필터: 너무 낮은 온도 제외 (예: 25도 미만)
+            if (obj_info[THERMAL_CAM][i].bbox_temp < 25) {
+                continue;
+            }
+            
+            temps[count] = (float)obj_info[THERMAL_CAM][i].bbox_temp;
+            temp_sum += temps[count];
+            count++;
+            
+            // 디버그 로그
+            // glog_debug("Including cow %d with temp %.1f in average\n", 
+            //           i, temps[count-1]);
+        }
+    }
+    
+    if (count == 0) {
+        glog_debug("No valid cows for temperature statistics\n");
+        return;
+    }
+    
+    // 평균 계산
+    stats->avg_temp = temp_sum / count;
+    stats->total_cows = count;
+    
+    // 표준편차 계산
+    float variance = 0;
+    for (int i = 0; i < count; i++) {
+        float diff = temps[i] - stats->avg_temp;
+        variance += diff * diff;
+    }
+    stats->std_dev = sqrt(variance / count);
+    
+    // 통계 로그
+    // glog_debug("Temperature Stats: count=%d, avg=%.1f, std=%.1f, range=[%.1f-%.1f]\n",
+    //            count, stats->avg_temp, stats->std_dev,
+    //            count > 0 ? temps[0] : 0, 
+    //            count > 0 ? temps[count-1] : 0);
+}
 
-	return temp;
+// 개별 소의 발열 여부 판단
+int is_cow_fever(int obj_id, HerdTempStats *herd_stats)
+{
+    if (obj_id < 0 || !herd_stats || herd_stats->total_cows < 2) 
+        return 0;
+    
+    float cow_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
+    float avg_temp = herd_stats->avg_temp;
+    float std_dev = herd_stats->std_dev;
+    
+    // 방법 1: 평균보다 특정 값 이상 높은 경우
+    float temp_threshold = 5.0f;  // 평균보다 5도 이상 높으면 발열
+    if (cow_temp > avg_temp + temp_threshold) {
+        return 1;
+    }
+    
+    // 방법 2: 표준편차 기반 (더 정확함)
+    // 평균 + (2 * 표준편차) 이상이면 발열 (상위 2.5%)
+    if (std_dev > 0 && cow_temp > avg_temp + (2.0f * std_dev)) {
+        return 1;
+    }
+    
+    return 0;
+}
+
+int is_cow_in_top_percent(int obj_id, float percent)
+{
+    int cow_count = 0;
+    float my_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
+    int higher_count = 0;
+    
+    // 나보다 온도가 높은 소 개수 세기
+    for (int i = 0; i < NUM_OBJS; i++) {
+        if (obj_info[THERMAL_CAM][i].bbox_temp > 0) {
+            cow_count++;
+            if (obj_info[THERMAL_CAM][i].bbox_temp > my_temp) {
+                higher_count++;
+            }
+        }
+    }
+    
+    if (cow_count == 0) return 0;
+    
+    // 상위 몇 %인지 계산
+    float percentile = (float)higher_count / cow_count * 100.0f;
+    
+    // 상위 percent% 안에 들면 발열
+    return (percentile <= percent);
+}
+
+void process_fever_detection(int cam_idx)
+{
+    if (cam_idx != THERMAL_CAM || !g_setting.temp_apply) return;
+    
+    static HerdTempStats herd_stats = {0};
+    
+    // 전체 소들의 온도 통계 계산
+    calculate_herd_temperature_stats(&herd_stats);
+    
+    // 유효한 소가 너무 적으면 기본값 사용
+    if (herd_stats.total_cows < 2 || herd_stats.avg_temp < 25.0f) {
+        glog_debug("Invalid stats: cows=%d, avg=%.1f. Using default threshold.\n", 
+                  herd_stats.total_cows, herd_stats.avg_temp);
+        
+        // 절대 온도 기준으로 판단
+        for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++) {
+            if (obj_info[THERMAL_CAM][obj_id].bbox_temp <= 0) continue;
+            
+            // 38도 이상이면 발열로 판단
+            if (obj_info[THERMAL_CAM][obj_id].bbox_temp >= 38.0f) {
+                obj_info[THERMAL_CAM][obj_id].temp_duration++;
+                
+                if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time) {
+                    obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+                    obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
+                    obj_info[THERMAL_CAM][obj_id].notification_flag = 1;
+                    glog_info("FEVER DETECTED (absolute): Cow %d, temp=%.1f\n",
+                             obj_id, (float)obj_info[THERMAL_CAM][obj_id].bbox_temp);
+                }
+            } else {
+                obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+            }
+        }
+        return;
+    }
+    
+    // 정상적인 통계 기반 발열 감지
+    for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++) {
+        if (obj_info[THERMAL_CAM][obj_id].bbox_temp <= g_setting.threshold_under_temp) {
+            obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+            obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
+            continue;
+        }
+        
+        float cow_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
+        
+        // 평균이 정상 범위인 경우에만 상대 비교
+        int is_fever = 0;
+        if (herd_stats.avg_temp >= 30.0f && herd_stats.avg_temp <= 37.0f) {
+            // 평균 + 임계값 방식
+            is_fever = (cow_temp > herd_stats.avg_temp + g_setting.temp_diff_threshold);
+        } else {
+            // 평균이 비정상이면 절대 온도 기준
+            is_fever = (cow_temp >= 38.0f);
+        }
+        
+        if (is_fever) {
+            obj_info[THERMAL_CAM][obj_id].temp_duration++;
+            
+            // glog_debug("Cow %d fever check: temp=%.1f, avg=%.1f, duration=%d/%d\n", 
+            //           obj_id, cow_temp, herd_stats.avg_temp,
+            //           obj_info[THERMAL_CAM][obj_id].temp_duration, 
+            //           g_setting.over_temp_time);
+            
+            if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time) {
+                obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+                
+                if (obj_info[THERMAL_CAM][obj_id].temp_event_time_gap == 0) {
+                    obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
+                    // obj_info[THERMAL_CAM][obj_id].notification_flag = 1;
+                    
+                    // glog_info("FEVER DETECTED: Cow %d, temp=%.1f (avg=%.1f + %.1f)\n",
+                    //          obj_id, cow_temp, herd_stats.avg_temp, 
+                    //          g_setting.temp_diff_threshold);
+                }
+            }
+        } else {
+            obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+            obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
+        }
+    }
 }
 
 void get_bbox_temp(GstBuffer *buf, int obj_id)
@@ -993,27 +1203,6 @@ void init_temp_avg()
 	objs_temp_total = 0;
 }
 
-void get_temp_total(NvDsObjectMeta *obj_meta)
-{
-	if (obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp < g_setting.threshold_under_temp)
-		return;
-
-	objs_temp_total += obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp;
-	objs_count++;
-}
-
-void get_temp_avg()
-{
-	if (objs_count == 0 || objs_temp_total == 0)
-	{
-		objs_temp_avg = 0;
-		return;
-	}
-
-	objs_temp_avg = objs_temp_total / objs_count;
-	// glog_trace("objs_temp_total=%d objs_count=%d objs_temp_avg=%d\n", objs_temp_total, objs_count, objs_temp_avg);
-}
-
 #endif
 
 #if RESNET_50
@@ -1074,52 +1263,6 @@ int is_temp_duration()
 	}
 
 	return 0;
-}
-
-void check_for_temp_notification()
-{
-	if (objs_temp_avg < g_setting.threshold_under_temp || objs_count == 0)
-	{
-		init_temp_avg();
-		return;
-	}
-
-	for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
-	{
-		if (obj_info[THERMAL_CAM][obj_id].bbox_temp < g_setting.threshold_under_temp)
-		{
-			obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-			obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
-			continue;
-		}
-
-		if (obj_info[THERMAL_CAM][obj_id].bbox_temp > (objs_temp_avg + g_setting.temp_diff_threshold))
-		{
-			obj_info[THERMAL_CAM][obj_id].temp_duration++;
-			glog_debug("objs_temp_avg=%d obj_id=%d bbox_temp=%d temp_duration=%d\n", objs_temp_avg, obj_id, obj_info[THERMAL_CAM][obj_id].bbox_temp, obj_info[THERMAL_CAM][obj_id].temp_duration);
-			if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time)
-			{ // if duration lasted more than designated time
-				obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-				if (obj_info[THERMAL_CAM][obj_id].temp_event_time_gap == 0)
-				{
-					obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
-					obj_info[THERMAL_CAM][obj_id].notification_flag = 1; // send notification later
-					glog_debug("objs_temp_avg=%d obj_id=%d notification_flag=1\n", objs_temp_avg, obj_id);
-				}
-				else
-				{
-					glog_debug("obj_info[THERMAL_CAM][%d].temp_event_time_gap=%d is less than TEMP_EVENT_TIME_GAP=%d\n", obj_id, obj_info[THERMAL_CAM][obj_id].temp_event_time_gap, TEMP_EVENT_TIME_GAP);
-				}
-			}
-		}
-		else
-		{
-			obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-			obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
-		}
-	}
-
-	init_temp_avg();
 }
 
 #endif
@@ -1207,13 +1350,23 @@ void set_color(NvDsObjectMeta *obj_meta, int color, int set_text_blank)
 	}
 }
 
+// 색상 설정도 단순화
 void set_temp_bbox_color(NvDsObjectMeta *obj_meta)
 {
-	if (obj_info[THERMAL_CAM][obj_meta->object_id].temp_duration > 0)
-	{
-		set_color(obj_meta, BLUE_COLOR, 0);
-		// glog_trace("blue bbox obj_id=%d\n", obj_meta->object_id);
-	}
+    int obj_id = obj_meta->object_id;
+    if (obj_id < 0) return;
+    
+    // 온도 기반 색상 설정
+    if (obj_info[THERMAL_CAM][obj_id].class_id == CLASS_OVER_TEMP) {
+        // 발열: 빨간색
+        set_color(obj_meta, RED_COLOR, 0);
+    } else if (obj_info[THERMAL_CAM][obj_id].temp_duration > 0) {
+        // 발열 진행 중: 노란색
+        set_color(obj_meta, YELLO_COLOR, 0);
+    } else {
+        // 정상: 녹색
+        set_color(obj_meta, GREEN_COLOR, 0);
+    }
 }
 
 // nvds_process.c에 추가할 함수
@@ -1446,13 +1599,11 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 					if (sec_interval[THERMAL_CAM])
 					{
 						get_bbox_temp(buf, obj_meta->object_id);
+
 						if (obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp > g_setting.threshold_under_temp)
 						{
 							// glog_trace("id=%d bbox_temp=%d\n", obj_meta->object_id, obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp);
 							add_correction();
-#if TEMP_NOTI
-							get_temp_total(obj_meta); // get temperature total before getting average
-#endif
 						}
 					}
 					if (g_setting.display_temp || do_temp_display)
@@ -1498,9 +1649,10 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 				{
 					if (cam_idx == THERMAL_CAM)
 					{
-						get_temp_avg(); // get average temperature for objects in the screen
-						check_for_temp_notification();
-						do_temp_display = is_temp_duration(); // if over temp state is being counted for notification
+						// get_temp_avg(); // get average temperature for objects in the screen
+						// do_temp_display = is_temp_duration(); // if over temp state is being counted for notification
+						process_fever_detection(cam_idx);  // 새 함수로 교체
+        				do_temp_display = is_temp_duration();
 					}
 				}
 #endif
@@ -1857,3 +2009,4 @@ int is_event_recording()
 {
 	return g_event_recording;
 }
+

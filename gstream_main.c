@@ -48,6 +48,8 @@ pthread_mutex_t g_process_msg_mutex;
 pthread_mutex_t g_send_info_mutex;
 pthread_mutex_t g_retry_connect_mutex;
 
+static guint retry_timeout_id = 0;
+static gboolean is_reconnecting = FALSE;
 WebRTCConfig g_config;
 GstElement *g_pipeline;
 CurlIinfoType g_curlinfo;
@@ -84,6 +86,7 @@ gboolean send_register_with_server(SoupWebsocketConnection *ws_conn);
 static void connect_to_websocket_server_async(void);
 void redirect_output();
 void send_pipe_data(const gchar *str);
+void goto_ptz_preset(int index, int use_auto);
 
 extern void *receive_data(void *arg);
 extern SOCKETINFO *init_socket_server(int port, void *(*func_ptr)(void *), void (*process_data)(char *ptr, int len, void *arg));
@@ -105,6 +108,22 @@ static gboolean ptz_pipe_read_callback(GIOChannel *source, GIOCondition conditio
 // static gboolean check_ptz_pipe_status(gpointer data);
 static void process_ptz_command(const char *command);
 
+static gboolean retry_connect_timeout(gpointer user_data)
+{
+    glog_trace("Attempting reconnect (attempt %d)\n", connect_retry);
+    
+    // 재연결 시도
+    connect_to_websocket_server_async();
+    
+    // 플래그 리셋
+    is_reconnecting = FALSE;
+    retry_timeout_id = 0;
+    
+    pthread_mutex_unlock(&g_retry_connect_mutex);
+    
+    return G_SOURCE_REMOVE;  // 한 번만 실행
+}
+
 // PTZ 명령 처리 함수
 static void process_ptz_command(const char *command)
 {
@@ -120,49 +139,68 @@ static void process_ptz_command(const char *command)
     if (newline)
         *newline = '\0';
 
-    if (strcmp(clean_cmd, "up") == 0)
+    char cmd_name[64] = {0};
+    char param1[32] = {0};
+    char param2[32] = {0};
+    
+    // 공백으로 분리된 명령어와 파라미터 파싱
+    int parsed = sscanf(clean_cmd, "%63s %31s %31s", cmd_name, param1, param2);
+
+    if (strcmp(cmd_name, "up") == 0)
     {
         send_pipe_data("up");
     }
-    else if (strcmp(clean_cmd, "down") == 0)
+    else if (strcmp(cmd_name, "down") == 0)
     {
         send_pipe_data("down");
     }
-    else if (strcmp(clean_cmd, "left") == 0)
+    else if (strcmp(cmd_name, "left") == 0)
     {
         send_pipe_data("left");
     }
-    else if (strcmp(clean_cmd, "right") == 0)
+    else if (strcmp(cmd_name, "right") == 0)
     {
         send_pipe_data("right");
     }
-    else if (strcmp(clean_cmd, "enter") == 0)
+    else if (strcmp(cmd_name, "enter") == 0)
     {
         send_pipe_data("enter");
     }
-    else if (strcmp(clean_cmd, "zoom_init") == 0)
+    else if (strcmp(cmd_name, "zoom_init") == 0)
     {
         send_pipe_data("zoom_init");
     }
-    else if (strcmp(clean_cmd, "ir_init") == 0)
+    else if (strcmp(cmd_name, "ir_init") == 0)
     {
         send_pipe_data("ir_init");
     }
-    else if (strcmp(clean_cmd, "trigger_event") == 0)
+    else if (strcmp(cmd_name, "trigger_event") == 0)
     {
         send_event_to_recorder_simple(1, 0);
     }
-    else if (strcmp(clean_cmd, "AF_Debug_On") == 0)
+    else if (strcmp(cmd_name, "AF_Debug_On") == 0)
     {
         send_pipe_data("AF_Debug_On");
     }
-    else if (strcmp(clean_cmd, "AF_Debug_Off") == 0)
+    else if (strcmp(cmd_name, "AF_Debug_Off") == 0)
     {
         send_pipe_data("AF_Debug_Off");
     }
-    else if (strcmp(clean_cmd, "Focus_Position") == 0)
+    else if (strcmp(cmd_name, "Focus_Position") == 0)
     {
         send_pipe_data("Focus_Position");
+    }
+    else if (strcmp(cmd_name, "cur_auto_ptz_position") == 0)
+    {
+        send_pipe_data("cur_auto_ptz_position");
+    }
+    else if (strcmp(cmd_name, "goto_auto_preset") == 0 && parsed >= 2)
+    {
+        int preset_idx = atoi(param1);
+        glog_trace("Going to auto preset: %d\n", preset_idx);
+        
+        // PTZ 함수 직접 호출
+        goto_ptz_preset(preset_idx, 1);
     }
     else
     {
@@ -408,22 +446,36 @@ int get_udp_port(UDPClientProcess process, CameraDevice device, StreamChoice str
 	return udp_port;
 }
 
+void terminate_program() // LJH, 252026
+{
+    glog_trace("Stop program will be called in 3 seconds...\n");
+    sleep(3);
+    execute_process("/home/nvidia/webrtc/stop.sh", FALSE);
+}
+
 gboolean cleanup_and_retry_connect(const gchar *msg, enum AppState state)
 {
+    // 이미 재연결 중이면 중복 실행 방지
+    if (is_reconnecting) {
+        glog_trace("Already reconnecting, skipping duplicate attempt\n");
+        return 0;
+    }
+    
     pthread_mutex_lock(&g_retry_connect_mutex);
+    
     if (msg)
         glog_error("%s AppState %d\n", msg, state);
     if (state > 0)
         g_app_state = state;
 
-    /*@@ clearn up client*/
+    // WebRTC peer 정리
     free_webrtc_peer(FALSE);
 
+    // WebSocket 연결 정리
     if (ws_conn)
     {
         if (soup_websocket_connection_get_state(ws_conn) == SOUP_WEBSOCKET_STATE_OPEN)
         {
-            /* This will call us again */
             soup_websocket_connection_close(ws_conn, 1000, "");
         }
         else
@@ -433,17 +485,35 @@ gboolean cleanup_and_retry_connect(const gchar *msg, enum AppState state)
         ws_conn = NULL;
     }
 
+    // 타임아웃 에러인 경우 특별 처리
     if (APP_STATE_ERROR_TIMEOUT == state)
     {
         pthread_mutex_unlock(&g_retry_connect_mutex);
         return 1;
     }
 
-    sleep(10);
-    glog_trace("try reconnect %d\n", connect_retry++);
-    connect_to_websocket_server_async();
-    pthread_mutex_unlock(&g_retry_connect_mutex);
+    // 최대 재시도 횟수 체크
+    if (connect_retry >= 10) {  // 10회 이상 실패 시
+        glog_error("Maximum reconnection attempts reached. Terminating program.\n");
+        terminate_program();
+        pthread_mutex_unlock(&g_retry_connect_mutex);
+        return 1;
+    }
 
+    // 재연결 플래그 설정
+    is_reconnecting = TRUE;
+    connect_retry++;
+
+    // 기존 타이머가 있으면 제거
+    if (retry_timeout_id > 0) {
+        g_source_remove(retry_timeout_id);
+    }
+
+    // 10초 후 재연결 시도 (비동기)
+    glog_trace("Scheduling reconnect in 10 seconds...\n");
+    retry_timeout_id = g_timeout_add_seconds(10, retry_connect_timeout, NULL);
+    
+    // mutex는 retry_connect_timeout에서 unlock
     return 0;
 }
 
@@ -829,6 +899,7 @@ static void on_server_connected(SoupSession *session, GAsyncResult *res, SoupMes
 
     connect_retry = 0;
     g_wait_reply_cnt = 0;
+    is_reconnecting = FALSE;
 }
 
 /*
@@ -1152,31 +1223,58 @@ InternetState get_internet_state(InternetState internet_state, int conn)
     return internet_state;
 }
 
-void terminate_program() // LJH, 252026
-{
-    glog_trace("Stop program will be called in 3 seconds...\n");
-    sleep(3);
-    execute_process("/home/nvidia/webrtc/stop.sh", FALSE);
-}
-
 static gboolean connect_check_callback(gpointer user_data)
 {
     static InternetState internet_state = INIT;
+    static int no_connection_count = 0;
     int conn = check_internet_connection();
     
-    glog_trace("g_app_state=%d g_wait_reply_cnt=%d CPU=%d GPU=%d g_source_cam_index=%d\n",
-               g_app_state, g_wait_reply_cnt, get_temp(0), get_temp(1), g_source_cam_idx);
+    // 메인 루프 상태 체크
+    if (!g_main_loop_is_running(loop)) {
+        glog_error("Main loop is not running in connect_check_callback!\n");
+        return G_SOURCE_REMOVE;
+    }
+    
+    glog_trace("g_app_state=%d g_wait_reply_cnt=%d CPU=%d GPU=%d g_source_cam_index=%d reconnecting=%d\n",
+               g_app_state, g_wait_reply_cnt, get_temp(0), get_temp(1), g_source_cam_idx, is_reconnecting);
+
+    // WebSocket 연결 상태 체크
+    if (!is_reconnecting && ws_conn == NULL) {
+        glog_error("WebSocket connection lost, initiating reconnect\n");
+        cleanup_and_retry_connect("WebSocket disconnected", SERVER_CONNECTION_ERROR);
+        return G_SOURCE_CONTINUE;
+    }
 
     internet_state = get_internet_state(internet_state, conn);
+    
+    if (internet_state == INTERNET_DISCONNECTED) {
+        no_connection_count++;
+        if (no_connection_count > 3) {  // 3분 이상 인터넷 끊김
+            glog_error("Internet disconnected for %d minutes\n", no_connection_count);
+        }
+    } else {
+        no_connection_count = 0;
+    }
+    
     if (internet_state == INTERNET_RECONNECTED)
     {
-        if (g_app_state != 2000)
+        if (g_app_state != SERVER_REGISTERING && !is_reconnecting)
         {
-            terminate_program();
+            glog_trace("Internet reconnected but not registered, attempting reconnect\n");
+            cleanup_and_retry_connect("Internet reconnected", SERVER_CONNECTION_ERROR);
         }
     }
 
     return G_SOURCE_CONTINUE;
+}
+
+static void cleanup_timers(void)
+{
+    if (retry_timeout_id > 0) {
+        g_source_remove(retry_timeout_id);
+        retry_timeout_id = 0;
+    }
+    // 다른 타이머들도 정리...
 }
 
 // gstream main이 죽을 경우 child process 역시 죽도록 함
@@ -1245,7 +1343,13 @@ int main(int argc, char *argv[])
 
     printf("=== gstrea_main start version [%s] ===\n", GSTREAM_MAIN_VER);
 
-    glog_trace("=== gstrea_main start version [%s] ===\n", GSTREAM_MAIN_VER);
+    // glog_trace("=== gstrea_main start version [%s] ===\n", GSTREAM_MAIN_VER);
+
+    glog_trace("========================================");
+    glog_trace("WebRTC Camera System Starting...");
+    glog_trace("Version: 1.0.0");
+    glog_trace("========================================");
+
     context = g_option_context_new("- gstreamer main ");
     g_option_context_add_main_entries(context, entries, NULL);
     g_option_context_add_group(context, gst_init_get_option_group());
@@ -1393,6 +1497,8 @@ int main(int argc, char *argv[])
     glog_trace ("g_curlinfo.token:%s\n", g_curlinfo.token);
 
     g_main_loop_run(loop);
+
+    cleanup_timers();
 
     free_webrtc_peer(TRUE);
     gst_element_set_state(GST_ELEMENT(g_pipeline), GST_STATE_NULL);

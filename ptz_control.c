@@ -905,8 +905,8 @@ int wait_for_ptz_completion(int preset_index, int timeout_sec) {
     // 프리셋의 목표 위치 가져오기
     parse_target_position(&AUTO_PTZ_POS_LIST[preset_index][1], &target_pos);
     
-    glog_trace("Waiting for PTZ preset %d to reach position P:%d T:%d Z:%d\n",
-              preset_index, target_pos.pan, target_pos.tilt, target_pos.zoom);
+    //glog_trace("Waiting for PTZ preset %d to reach position P:%d T:%d Z:%d\n",
+    //          preset_index, target_pos.pan, target_pos.tilt, target_pos.zoom);
     
     while (elapsed < timeout_sec) {
         // 기존 방식의 모션 정지 확인
@@ -915,7 +915,7 @@ int wait_for_ptz_completion(int preset_index, int timeout_sec) {
             PTZPosition current_pos;
             if (get_current_position(&current_pos) == 0) {
                 if (is_position_reached(&current_pos, &target_pos, !g_no_zoom)) {
-                    glog_trace("PTZ reached target position in %d seconds\n", elapsed);
+                    //glog_trace("PTZ reached target position in %d seconds\n", elapsed);
                     return elapsed;
                 }
             } else {
@@ -933,7 +933,7 @@ int wait_for_ptz_completion(int preset_index, int timeout_sec) {
         }
     }
     
-    glog_info("PTZ motion timeout after %d seconds\n", timeout_sec);
+    //glog_info("PTZ motion timeout after %d seconds\n", timeout_sec);
     return timeout_sec;
 }
 
@@ -943,4 +943,129 @@ const AutoPTZState* get_auto_ptz_state(void) {
 
 AutoPTZState get_auto_ptz_state_copy(void) {
     return g_auto_ptz_state;
+}
+
+void display_auto_ptz_status(void) {
+    glog_trace("========== All Preset Data ==========\n");
+    
+    // 1. Auto PTZ 프리셋 확인
+    glog_trace("--- Auto PTZ Presets (AUTO_PTZ_POS_LIST) ---\n");
+    int auto_count = 0;
+    for (int i = 0; i < MAX_PTZ_PRESET; i++) {
+        if (AUTO_PTZ_POS_LIST[i][0]) {  // 설정되어 있으면
+            PTZPosition pos;
+            parse_target_position(&AUTO_PTZ_POS_LIST[i][1], &pos);
+            
+            glog_trace("Auto Preset[%2d]: SET - Pan=%5d, Tilt=%5d, Zoom=%5d, Focus=%5d, Iris=%5d\n",
+                      i, pos.pan, pos.tilt, pos.zoom, pos.focus, pos.iris);
+            
+            // Raw 데이터도 표시
+            glog_trace("    Raw data: ");
+            for (int j = 0; j < 10; j++) {
+                glog_trace("%02X ", AUTO_PTZ_POS_LIST[i][j+1]);
+            }
+            glog_trace("\n");
+            auto_count++;
+        }
+    }
+    glog_trace("Total Auto Presets configured: %d\n\n", auto_count);
+    
+    // 2. Manual 프리셋 확인
+    glog_trace("--- Manual Presets (PTZ_POS_LIST) ---\n");
+    int manual_count = 0;
+    for (int i = 0; i < MAX_PTZ_PRESET; i++) {
+        if (PTZ_POS_LIST[i][0]) {  // 설정되어 있으면
+            PTZPosition pos;
+            parse_target_position(&PTZ_POS_LIST[i][1], &pos);
+            
+            glog_trace("Manual Preset[%2d]: SET - Pan=%5d, Tilt=%5d, Zoom=%5d, Focus=%5d, Iris=%5d\n",
+                      i, pos.pan, pos.tilt, pos.zoom, pos.focus, pos.iris);
+            manual_count++;
+        }
+    }
+    glog_trace("Total Manual Presets configured: %d\n\n", manual_count);
+    
+    // 3. 현재 설정 정보
+    glog_trace("--- Current Settings ---\n");
+    glog_trace("auto_ptz_seq: '%s'\n", g_setting.auto_ptz_seq);
+    glog_trace("AUTO_PTZ_MOVE_SEQ[0] (Enabled): %d\n", AUTO_PTZ_MOVE_SEQ[0]);
+    glog_trace("AUTO_PTZ_MOVE_SEQ[1] (Stay Time): %d\n", AUTO_PTZ_MOVE_SEQ[1]);
+    glog_trace("AUTO_PTZ_MOVE_SEQ[2] (Count): %d\n", AUTO_PTZ_MOVE_SEQ[2]);
+    
+    if (AUTO_PTZ_MOVE_SEQ[2] > 0) {
+        glog_trace("Sequence order: ");
+        for (int i = 0; i < AUTO_PTZ_MOVE_SEQ[2]; i++) {
+            glog_trace("%d ", AUTO_PTZ_MOVE_SEQ[3 + i]);
+        }
+        glog_trace("\n");
+    }
+    
+    glog_trace("=====================================\n");
+}
+
+int goto_preset(int preset_index, int use_auto_preset) {
+    if (!is_open_serial()) {
+        glog_error("Serial device not opened\n");
+        return -1;
+    }
+    
+    if (preset_index < 0 || preset_index >= MAX_PTZ_PRESET) {
+        glog_error("Invalid preset index: %d (valid range: 0-%d)\n", 
+                   preset_index, MAX_PTZ_PRESET-1);
+        return -1;
+    }
+    
+    // Auto PTZ가 동작 중이면 일시정지
+    if (is_work_auto_ptz()) {
+        pause_auto_ptz();
+        glog_info("Auto PTZ paused for manual movement\n");
+    }
+    
+    // 프리셋 데이터 선택
+    unsigned char* preset_list = use_auto_preset ? 
+                                AUTO_PTZ_POS_LIST[preset_index] : 
+                                PTZ_POS_LIST[preset_index];
+    
+    // 프리셋이 설정되어 있는지 확인
+    if (preset_list[0] == 0) {
+        glog_error("%s Preset %d is not configured\n", 
+                   use_auto_preset ? "Auto" : "Manual", preset_index);
+        return -1;
+    }
+    
+    // 목표 위치 파싱
+    PTZPosition target_pos;
+    parse_target_position(&preset_list[1], &target_pos);
+    
+    glog_info("Moving to %s Preset %d: Pan=%d, Tilt=%d, Zoom=%d\n",
+              use_auto_preset ? "Auto" : "Manual",
+              preset_index, target_pos.pan, target_pos.tilt, target_pos.zoom);
+    
+    // PTZ 이동 명령 생성
+    unsigned char send_data[32] = {0x96, 0x00, 0x01, 0x01, 0x0F};
+    memcpy(&send_data[5], &preset_list[1], 10);
+    
+    // 속도 설정 (수동 이동이므로 일반 속도 사용)
+    int move_speed = ptz_move_speed;
+    send_data[15] = send_data[16] = send_data[17] = send_data[18] = move_speed;
+    send_data[19] = 0;
+    send_data[20] = get_checksum(send_data, 20);
+    
+    // 명령 전송
+    unsigned char read_data[8];
+    int result = read_cmd_timeout(send_data, 21, read_data, 7, 1);
+    if (result == -1) {
+        glog_error("Failed to send move command\n");
+        return -1;
+    }
+    
+    return 0;
+}
+
+int goto_manual_preset(int preset_index) {
+    return goto_preset(preset_index, 0);
+}
+
+int goto_auto_preset(int preset_index) {
+    return goto_preset(preset_index, 1);
 }

@@ -63,5 +63,6 @@ void on_event_detected(int camera_id, int class_id, double event_time);
 void get_buffer_status(int camera_id, int *frame_count, double *duration, size_t *total_size);
 void save_codec_data(int camera_id, GstCaps *caps);
 void set_event_save_callback(EventSaveCallback callback, void *user_data);
+void set_file_permissions(const char* filepath);
 
 #endif // CIRCULAR_BUFFER_H

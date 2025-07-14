@@ -94,6 +94,11 @@ int wait_for_ptz_completion(int preset_index, int timeout_sec);
 
 const AutoPTZState* get_auto_ptz_state(void);
 AutoPTZState get_auto_ptz_state_copy(void);
+void display_auto_ptz_status(void);
+
+int goto_preset(int preset_index, int use_auto_preset);
+int goto_manual_preset(int preset_index);
+int goto_auto_preset(int preset_index);
 
 // 전역 변수
 extern int ptz_err_code;

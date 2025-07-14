@@ -144,6 +144,12 @@ enum {
   NO_BBOX,
 };
 
+typedef struct {
+    float avg_temp;      // 전체 소들의 평균 온도
+    float std_dev;       // 표준편차
+    int total_cows;      // 전체 소 개수
+} HerdTempStats;
+
 extern int g_event_class_id;
 extern CurlIinfoType g_curlinfo;
 extern GstElement *g_pipeline;
@@ -183,5 +189,7 @@ gboolean send_event_to_recorder_simple(int class_id, int camera_id);
 
 BboxColor get_object_color(guint camera_id, guint object_id, gint class_id);
 int send_notification_to_server(int class_id);
+void process_fever_detection(int cam_idx);
+void calculate_herd_temperature_stats(HerdTempStats *stats);
 
 #endif

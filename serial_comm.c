@@ -321,7 +321,7 @@ int uartSet(int fd, int baudRate, char parity, char dataBits, char stopbits, cha
 
 
 static int g_fd = -1;
-static pthread_mutex_t g_mutex, g_mutex_2;
+static pthread_mutex_t g_serial_mutex;
 int open_serial(const char *dev_name, int baudrate)
 {
     int bRet = 1;
@@ -350,19 +350,21 @@ int open_serial(const char *dev_name, int baudrate)
         return bRet;
     }
 
-    pthread_mutex_init(&g_mutex,NULL);
-    pthread_mutex_init(&g_mutex_2,NULL);
+    pthread_mutex_init(&g_serial_mutex, NULL);
     return bRet;
 }
 
 
 void close_serial()
 {
-  if(g_fd != -1){
-    close(g_fd);
-    g_fd = -1;
-  }
- 
+    pthread_mutex_lock(&g_serial_mutex);
+    if(g_fd != -1) {
+        close(g_fd);
+        g_fd = -1;
+    }
+    pthread_mutex_unlock(&g_serial_mutex);
+    
+    pthread_mutex_destroy(&g_serial_mutex);
 }
 
 
@@ -374,40 +376,37 @@ int is_open_serial()
 
 int write_serial(unsigned char *data, int size)
 {
-  if(g_fd == -1){
-    glog_error("serial device not opened before\n");
-    return -1;
-  }
+  if(g_fd == -1) {
+        glog_error("serial device not opened before\n");
+        return -1;
+    }
 
-  pthread_mutex_lock(&g_mutex);  
-  int iRet = write(g_fd, data, size);
-  usleep(ONE_TENTH_SEC);
-//   glog_trace("write_serial: ");
-//   print_serial_data(data, iRet);
-  pthread_mutex_unlock(&g_mutex);
-  return iRet;
+    pthread_mutex_lock(&g_serial_mutex);
+    int iRet = write(g_fd, data, size);
+    usleep(ONE_TENTH_SEC);
+    pthread_mutex_unlock(&g_serial_mutex);
+    
+    return iRet;
 }
 
 
 int read_serial(unsigned char *data, int size)
 {
-  if(g_fd == -1){
-    glog_error("serial device not opened before\n");
-    return -1;
-  }
+    if(g_fd == -1) {
+        glog_error("serial device not opened before\n");
+        return -1;
+    }
 
-  pthread_mutex_lock(&g_mutex);  
-  int iRet = read(g_fd, data, size);
-//   glog_trace("read_serial: ");
-//   print_serial_data(data, iRet);
-  pthread_mutex_unlock(&g_mutex);
-  return iRet;
+    pthread_mutex_lock(&g_serial_mutex);
+    int iRet = read(g_fd, data, size);
+    pthread_mutex_unlock(&g_serial_mutex);
+    
+    return iRet;
 }
 
 
-int read_serial_timeout(unsigned char *data, int size, int timeout_sec)
-{
-    if(g_fd == -1){
+int read_serial_timeout(unsigned char *data, int size, int timeout_sec) {
+    if(g_fd == -1) {
         glog_error("serial device not opened before\n");
         return -1;
     }
@@ -415,13 +414,11 @@ int read_serial_timeout(unsigned char *data, int size, int timeout_sec)
     struct timeval timeout;
     fd_set readfds;
     int retval;
-    unsigned char buf[200] = {0};                       //LJH
+    unsigned char buf[200] = {0};
 
-    // 타임아웃 설정 (예: 5초)
     timeout.tv_sec = timeout_sec;
     timeout.tv_usec = 0;
 
-    // 읽기 대기
     FD_ZERO(&readfds);
     FD_SET(g_fd, &readfds);
 
@@ -432,15 +429,14 @@ int read_serial_timeout(unsigned char *data, int size, int timeout_sec)
     } else if (retval) {
         int len = read(g_fd, buf, sizeof(buf));
         memcpy(data, buf, size);
-        // glog_debug("read_serial: ");
-        // print_serial_data(data, len);
+        
         if(data[0] != 0x96 || len != size) {
             glog_error("set_ptz_pos read data error Sync[0x%X] Read size[%d]\n", data[0], len);
             return -1;
         }
         return len;
     } else {
-        glog_error("No data within timeout \\n");
+        glog_error("No data within timeout\n");
         return -1;
     }
 
@@ -460,28 +456,42 @@ void check_speed(unsigned char* cmd_data, int cmd_len)
 }
 
 
-int read_cmd_timeout(unsigned char* cmd_data, int cmd_len, unsigned char* read_data, int read_len, int timeout)
-{
-    //1. 현재의 포지션을 가져옴 
-    pthread_mutex_lock(&g_mutex_2);  
-
-    int iRet = write_serial(cmd_data, cmd_len);
-    iRet = read_serial_timeout(read_data, read_len, timeout);
-    if (iRet < 0){
-        glog_error("Fail read serial time out \n");
-        pthread_mutex_unlock(&g_mutex_2);
-        return -1;            
-    }
-    //2. check valid 
-    if(read_data[0] != 0x96 || iRet != read_len){
-        glog_error("Sync=[0x%X] is not 0x96 or Read Size=[%d] is not [%d]\n", read_data[0], iRet, read_len);
-        pthread_mutex_unlock(&g_mutex_2);
+int read_cmd_timeout(unsigned char* cmd_data, int cmd_len, 
+                     unsigned char* read_data, int read_len, int timeout) {
+    int iRet;
+    
+    // 전체 트랜잭션을 하나의 뮤텍스로 보호
+    pthread_mutex_lock(&g_serial_mutex);
+    
+    // 명령 전송
+    iRet = write(g_fd, cmd_data, cmd_len);
+    if (iRet != cmd_len) {
+        glog_error("Failed to write command\n");
+        pthread_mutex_unlock(&g_serial_mutex);
         return -1;
     }
+    
+    usleep(ONE_TENTH_SEC);  // 전송 후 대기
+    
+    // 응답 읽기 (기존 함수 사용)
+    iRet = read_serial_timeout(read_data, read_len, timeout);
+    
+    pthread_mutex_unlock(&g_serial_mutex);
+    
+    if (iRet < 0) {
+        glog_error("Fail read serial timeout\n");
+        return -1;
+    }
+    
+    // 응답 검증
+    if(read_data[0] != 0x96 || iRet != read_len) {
+        glog_error("Invalid response: Sync=[0x%X], Size=[%d/%d]\n", 
+                   read_data[0], iRet, read_len);
+        return -1;
+    }
+    
     check_speed(cmd_data, cmd_len);
     
-    pthread_mutex_unlock(&g_mutex_2);
-
     return read_len;
 }
 

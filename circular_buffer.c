@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include "circular_buffer.h"
+#include <pwd.h>
+#include <grp.h>
 
 // 전역 순환 버퍼 배열
 static H264CircularBuffer circular_buffers[NUM_CAMERAS] = {0};
@@ -343,6 +345,8 @@ void save_h264_clip(H264Frame *frames, int frame_count, const char *filename) {
     }
     
     fclose(fp);
+
+    set_file_permissions(filename);
     g_print("Saved H.264 clip: %s (%.2f MB)\n", filename, total_size / (1024.0 * 1024.0));
 }
 
@@ -508,4 +512,21 @@ void get_buffer_status(int camera_id, int *frame_count, double *duration, size_t
     }
     
     pthread_mutex_unlock(&buffer->mutex);
+}
+
+void set_file_permissions(const char* filepath) {
+    struct passwd *pwd = getpwnam("nvidia");
+    struct group *grp = getgrnam("nvidia");
+    
+    if (pwd && grp) {
+        // 소유자를 nvidia:nvidia로 변경
+        if (chown(filepath, pwd->pw_uid, grp->gr_gid) != 0) {
+            perror("chown failed");
+        }
+        
+        // 권한을 664 (rw-rw-r--)로 설정
+        if (chmod(filepath, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH) != 0) {
+            perror("chmod failed");
+        }
+    }
 }

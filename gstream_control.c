@@ -1060,9 +1060,18 @@ void send_pipe_data(const gchar *str)
 
         glog_debug("send ir_init command\n");
     }
+    else if(strstr(str, "cur_auto_ptz_position") != NULL)
+    {
+        display_auto_ptz_status();
+    }
     else
     {
         glog_error("Unknown pipe data %s \n", str);
         return;
     }
+}
+
+void goto_ptz_preset(int index, int use_auto)
+{
+    goto_preset(index, use_auto);
 }
