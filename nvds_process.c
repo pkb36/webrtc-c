@@ -1709,8 +1709,6 @@ void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta,
         glog_error("Failed to acquire display meta\n");
         return;
     }
-
-
     
     // 프레임 해상도 가져오기
     int frame_width = frame_meta->source_frame_width;
@@ -1728,14 +1726,27 @@ void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta,
         }
     }
     
-    // 라벨 텍스트 생성
+    // 라벨 텍스트 생성 - 이벤트 우선순위로 결정
     char label_text[256];
-    if (cam_idx == THERMAL_CAM && 
-        (g_setting.display_temp || temp_display) &&
-        obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp > 0) {
+    
+    // 1. 먼저 이벤트 발생 여부 확인 (Heat, Flip 등)
+    if (obj_meta->class_id == CLASS_HEAT_COW || 
+        obj_meta->class_id == CLASS_FLIP_COW || 
+        obj_meta->class_id == CLASS_LABOR_SIGN_COW) {
+        // 이벤트 발생 시에는 obj_label을 표시
+        sprintf(label_text, "%s %.0f%%", 
+                obj_meta->obj_label, 
+                obj_meta->confidence * 100);
+    }
+    // 2. 열화상 카메라이고 이벤트가 없는 경우 온도 표시
+    else if (cam_idx == THERMAL_CAM && 
+             (g_setting.display_temp || temp_display) &&
+             obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp > 0) {
         sprintf(label_text, "[%d°C]", 
                 obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp);
-    } else {
+    }
+    // 3. 기본 라벨 표시
+    else {
         sprintf(label_text, "%s %.0f%%", 
                 obj_meta->obj_label, 
                 obj_meta->confidence * 100);
@@ -1747,10 +1758,10 @@ void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta,
     
     if (cam_idx == THERMAL_CAM) {
         // 열화상은 작은 해상도이므로 다른 비율 적용
-        base_font_size = 10;
+        base_font_size = 8;
         scale_factor = frame_height / 288.0;
     } else {
-        base_font_size = 14;
+        base_font_size = 12;
         scale_factor = frame_height / 1080.0;
     }
     
@@ -1826,7 +1837,7 @@ void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta,
     text_params->y_offset = bg_rect->top;
     
     // 폰트 설정
-    text_params->font_params.font_name = "Arial";
+    text_params->font_params.font_name = "Ubuntu";
     text_params->font_params.font_size = font_size;
     text_params->font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0};
     
@@ -1896,7 +1907,7 @@ h264_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
 static void on_event_save_complete(int camera_id, int event_id, const char *filename, const char *http_path, 
                                   gboolean success, double event_time, void *user_data) {
     if (success) {
-        g_print("=== Event Save Complete ===\n");
+        glog_info("=== Event Save Complete ===\n");
         g_print("Camera: %d\n", camera_id);
         g_print("File: %s\n", filename);
         g_print("Event time: %.2f\n", event_time);

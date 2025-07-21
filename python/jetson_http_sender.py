@@ -87,6 +87,10 @@ class HTTPFileTransfer:
         
         # 녹화 경로의 모든 MP4 파일 검색
         for root, dirs, files in os.walk(self.local_record_path):
+            # EVENT가 포함된 폴더는 건너뛰기
+            if 'EVENT' in root:
+                continue
+                
             for file in files:
                 if file.endswith('.mp4'):
                     file_path = Path(root) / file

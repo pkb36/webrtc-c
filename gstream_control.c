@@ -39,8 +39,6 @@ extern pthread_mutex_t g_retry_connect_mutex;
 
 extern void terminate_program();
 
-static int g_tegrastats_interval = 12; // 5초 * 12 = 60초
-
 #if MINDULE_INCLUDE
 #define RANCH_SETTING_FILE "ranch_setting.json"
 extern RanchSetting g_ranch_setting;
@@ -312,7 +310,6 @@ exit_func:
 void *process_heartbit(void *arg)
 {
     static int count = 0;
-    static int tegrastats_count = 0;
 
     glog_trace("start heartbit process timeout %d \n", g_heartbit_timeout);
     while (1)

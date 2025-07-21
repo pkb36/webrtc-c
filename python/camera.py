@@ -89,6 +89,8 @@ class CameraRecorder:
         self.restart_cooldown = 30  # 30초 이내 재시작 방지
 
         self.fragment_count = 0
+        self.use_fallback = False  # fallback 모드 여부
+        self.test_pattern = False  # 테스트 패턴 사용 여부
         
     def set_restart_callback(self, callback):
         """재시작 콜백 설정"""
@@ -126,6 +128,8 @@ class CameraRecorder:
         
         if self.test_file:
             camera_source = self._get_file_source()
+        elif self.use_fallback:
+            camera_source = self._get_fallback_source()
         else:
             camera_source = self._get_camera_source()
 
@@ -133,7 +137,7 @@ class CameraRecorder:
         send_encoder_settings = self._get_send_encoder_settings()
         
         # 녹화가 비활성화된 경우 스트리밍만 수행
-        if not self.recording_enabled:
+        if not self.recording_enabled or self.test_pattern:
             pipeline_str = f"""
                 {camera_source} !
                 queue ! videoconvert name=videoconvert0 ! video/x-raw,format=I420 ! 
@@ -150,6 +154,7 @@ class CameraRecorder:
                 
                 t. ! queue max-size-buffers=100 max-size-bytes=0 max-size-time=0 ! 
                 videoconvert name=videoconvert0 ! 
+                videoflip method={self.config['flip']} !
                 video/x-raw, format=I420 !
                 nvvidconv ! 
                 video/x-raw(memory:NVMM), format=I420 ! 
@@ -236,7 +241,7 @@ class CameraRecorder:
         self.last_frame_time = datetime.now()
         
         # if self.config['name'] == "RGB_Camera":
-        print(f"{self.config['name']}: 프레임 수신 - {self.frame_count} (시간: {self.last_frame_time})")
+        # print(f"{self.config['name']}: 프레임 수신 - {self.frame_count} (시간: {self.last_frame_time})")
 
         # 주기적인 로그 (선택사항)
         self.frame_count += 1
@@ -247,6 +252,30 @@ class CameraRecorder:
 
     def _get_camera_source(self):
         """카메라 소스 GStreamer 엘리먼트"""
+
+        device_path = f"/dev/video{self.config['device_id']}"
+
+        # 카메라 장치 존재 여부 확인
+        if not Path(device_path).exists():
+            logger.warning(f"{self.config['name']}: {device_path} 없음 - 테스트 패턴 사용")
+            return self._get_fallback_source()
+
+        # 카메라 열기 가능 여부 테스트
+        try:
+            # v4l2-ctl로 간단히 테스트
+            result = subprocess.run(
+                ['v4l2-ctl', f'--device={device_path}', '--get-fmt-video'],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode != 0:
+                logger.warning(f"{self.config['name']}: {device_path} 접근 불가 - 테스트 패턴 사용")
+                return self._get_fallback_source()
+        except Exception as e:
+            logger.warning(f"{self.config['name']}: 카메라 테스트 실패 - {e}")
+            return self._get_fallback_source()
+        
+        self.test_pattern = False  # 테스트 패턴 사용 안함
+
         if(self.config['device_id'] == 2):
             # Thermal 카메라의 경우 v4l2src를 사용하여 YUYV 포맷으로 캡처
             return (
@@ -265,6 +294,30 @@ class CameraRecorder:
                 f"height={self.config['height']}, framerate=30/1 ! "
                 f"videorate ! "  # 10fps 초과분만 드롭
                 f"video/x-raw, framerate=10/1"
+            )
+
+    def _get_fallback_source(self):
+        """카메라 사용 불가 시 대체 비디오 소스"""
+        # 카메라별로 다른 테스트 패턴 사용
+        if 'RGB' in self.config['name']:
+            pattern = 0  # SMPTE 컬러바
+            text_overlay = "RGB Camera Unavailable"
+            framerate = 30
+        else:
+            pattern = 2  # 검은 화면 (thermal 느낌)
+            text_overlay = "Thermal Camera Unavailable"
+            framerate = 50
+        
+        self.test_pattern = True  # 테스트 패턴 사용 플래그 설정
+
+        return (
+            f"videotestsrc pattern={pattern} ! "
+            f"video/x-raw, format=I420, width={self.config['width']}, "
+            f"height={self.config['height']}, framerate={framerate}/1 ! "
+            f"textoverlay text=\"{text_overlay}\" "
+            f"valignment=center halignment=center font-desc=\"Sans 24\" ! "
+            f"videorate ! "  # 10fps 초과분만 드롭
+            f"video/x-raw, framerate=10/1"        
             )
 
     def _get_file_source(self):
@@ -355,11 +408,37 @@ class CameraRecorder:
         elif t == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
             logger.error(f"{self.config['name']}: 에러 - {err}, {debug}")
-            # 에러 발생 시 파이프라인 재시작 시도
-            self.request_restart("GStreamer 에러 발생")
+            
+            # v4l2src 관련 에러인 경우 fallback으로 전환
+            if "v4l2src" in str(err) or "Cannot identify device" in str(err):
+                logger.warning(f"{self.config['name']}: 카메라 에러 감지 - Fallback 모드로 전환")
+                self.switch_to_fallback()
+            else:
+                self.request_restart("GStreamer 에러 발생")
         elif t == Gst.MessageType.WARNING:
             warn, debug = message.parse_warning()
             logger.warning(f"{self.config['name']}: 경고 - {warn}, {debug}")
+
+    def switch_to_fallback(self):
+        """실행 중 fallback 소스로 전환"""
+        logger.info(f"{self.config['name']}: Fallback 소스로 전환 시도")
+        
+        # 기존 파이프라인 정지
+        if self.pipeline:
+            self.pipeline.set_state(Gst.State.NULL)
+            
+        # fallback 플래그 설정
+        self.use_fallback = True
+        
+        # 새 파이프라인 생성 (fallback 소스 사용)
+        self.create_pipeline()
+        
+        # 파이프라인 재시작
+        ret = self.pipeline.set_state(Gst.State.PLAYING)
+        if ret == Gst.StateChangeReturn.FAILURE:
+            logger.error(f"{self.config['name']}: Fallback 파이프라인 시작 실패")
+        else:
+            logger.info(f"{self.config['name']}: Fallback 모드로 전환 완료")
             
     def watchdog_thread_func(self):
         """프레임 수신 모니터링 스레드"""
@@ -581,6 +660,7 @@ class DualCameraSystem:
                     'device_id': 0,
                     'width': 1920,
                     'height': 1080,
+                    'flip' : 2,
                     'fps': 10,
                     'bitrate': 2000000,
                     'udp_host': '127.0.0.1',
@@ -592,6 +672,7 @@ class DualCameraSystem:
                     'device_id': 2,  # /dev/video2
                     'width': 384,
                     'height': 290,
+                    'flip' : 0,
                     'fps': 10,
                     'bitrate': 2000000,
                     'udp_host': '127.0.0.1',
@@ -612,8 +693,9 @@ class DualCameraSystem:
             return default_config
             
     def verify_cameras(self):
-        """카메라 존재 확인"""
+        """카메라 존재 확인 및 사용 가능한 카메라 목록 반환"""
         logger.info("카메라 확인 중...")
+        available_cameras = []
         
         for camera in self.config['cameras']:
             device_path = f"/dev/video{camera['device_id']}"
@@ -627,13 +709,20 @@ class DualCameraSystem:
                         capture_output=True, text=True
                     )
                     logger.debug(f"{camera['name']} 현재 설정:\n{result.stdout}")
+                    available_cameras.append(camera)
                 except Exception as e:
                     logger.warning(f"{camera['name']} 정보 확인 실패: {e}")
+                    # 정보 확인은 실패했지만 장치는 존재하므로 추가
+                    available_cameras.append(camera)
             else:
-                logger.error(f"✗ {camera['name']}: {device_path} 없음")
-                return False
+                logger.warning(f"✗ {camera['name']}: {device_path} 없음 - 이 카메라는 건너뜁니다")
                 
-        return True
+        if not available_cameras:
+            logger.error("사용 가능한 카메라가 없습니다")
+            return []
+            
+        logger.info(f"사용 가능한 카메라: {len(available_cameras)}개")
+        return available_cameras
             
     def monitor_processes(self):
         """프로세스 상태 모니터링 및 재시작"""
@@ -683,13 +772,23 @@ class DualCameraSystem:
         logger.info("듀얼 카메라 시스템 시작")
         
         # 카메라 확인
-        if not self.test_mode and not self.verify_cameras():
-            logger.error("카메라 확인 실패")
-            return False
+        available_cameras = []
+        if not self.test_mode:
+            available_cameras = self.verify_cameras()
+            if not available_cameras:
+                logger.error("사용 가능한 카메라가 없습니다")
+                return False
+        else:
+            # 테스트 모드에서는 설정된 모든 카메라 사용
+            available_cameras = self.config['cameras']
         
+        available_cameras = self.config['cameras']
+
         self.running = True
+
         
-        for camera_config in self.config['cameras']:
+        # 사용 가능한 카메라만 시작
+        for camera_config in available_cameras:
             # 카메라별 출력 디렉토리
             output_dir = self.base_dir
             
@@ -721,6 +820,10 @@ class DualCameraSystem:
             
             # 프로세스 시작 간격
             time.sleep(1)
+        
+        if not self.processes:
+            logger.error("시작된 카메라 프로세스가 없습니다")
+            return False
             
         # 프로세스 모니터링 스레드 시작
         self.monitor_thread = threading.Thread(target=self.monitor_processes)
