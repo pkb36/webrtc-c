@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Jetson Xavier NX에서 Windows PC로 MP4 파일 전송 스크립트
-HTTP POST를 사용한 전송
+HTTP POST를 사용한 전송 - 오늘 날짜 파일만 전송
 """
 
 import os
@@ -9,7 +9,7 @@ import time
 import json
 import logging
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 import schedule
 import hashlib
@@ -38,6 +38,7 @@ class HTTPFileTransfer:
         self.delete_after_transfer = self.config.get('delete_after_transfer', False)
         self.file_age_minutes = self.config.get('file_age_minutes', 10)
         self.chunk_size = self.config.get('chunk_size_mb', 10) * 1024 * 1024
+        self.today_only = self.config.get('today_only', True)  # 오늘 날짜 파일만 전송 옵션
         
         # 전송 상태 추적 파일
         self.state_file = Path('/home/nvidia/transfer_state.json')
@@ -79,6 +80,16 @@ class HTTPFileTransfer:
             logger.error(f"서버 연결 실패: {e}")
             return False
     
+    def is_file_from_today(self, file_path):
+        """파일이 오늘 생성되었는지 확인"""
+        file_stat = file_path.stat()
+        # 파일 생성 시간 (ctime) 또는 수정 시간 (mtime) 중 더 이른 시간 사용
+        file_time = min(file_stat.st_ctime, file_stat.st_mtime)
+        file_date = datetime.fromtimestamp(file_time).date()
+        today = date.today()
+        
+        return file_date == today
+    
     def get_files_to_transfer(self):
         """전송할 파일 목록 조회"""
         files_to_transfer = []
@@ -95,6 +106,11 @@ class HTTPFileTransfer:
                 if file.endswith('.mp4'):
                     file_path = Path(root) / file
                     
+                    # 오늘 날짜 파일만 전송 옵션이 켜져있으면 날짜 확인
+                    if self.today_only and not self.is_file_from_today(file_path):
+                        logger.debug(f"오늘 날짜가 아닌 파일 스킵: {file_path}")
+                        continue
+                    
                     # 파일 수정 시간 확인
                     mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
                     
@@ -104,6 +120,7 @@ class HTTPFileTransfer:
                         file_str = str(file_path)
                         if file_str not in self.state['transferred_files']:
                             files_to_transfer.append(file_path)
+                            logger.info(f"전송 대상 파일 추가: {file_path} (생성일: {datetime.fromtimestamp(file_path.stat().st_ctime).date()})")
                         elif self.delete_after_transfer:
                             # 이미 전송되었고 삭제 옵션이 켜져있으면 삭제
                             try:
@@ -122,7 +139,9 @@ class HTTPFileTransfer:
                 'original_path': str(file_path),
                 'timestamp': datetime.now().isoformat(),
                 'checksum': self.calculate_checksum(file_path),
-                'device_id': self.config.get('device_id', 'jetson_nx')
+                'device_id': self.config.get('device_id', 'jetson_nx'),
+                'file_created': datetime.fromtimestamp(file_path.stat().st_ctime).isoformat(),
+                'file_modified': datetime.fromtimestamp(file_path.stat().st_mtime).isoformat()
             }
             
             # 파일 전송
@@ -155,7 +174,7 @@ class HTTPFileTransfer:
     
     def transfer_files(self):
         """파일 전송 메인 함수"""
-        logger.info("파일 전송 작업 시작")
+        logger.info(f"파일 전송 작업 시작 (오늘 날짜: {date.today()})")
         
         # 서버 연결 확인
         if not self.test_connection():
@@ -181,7 +200,8 @@ class HTTPFileTransfer:
                     # 전송 성공 기록
                     self.state['transferred_files'][str(file_path)] = {
                         'timestamp': datetime.now().isoformat(),
-                        'size': file_path.stat().st_size
+                        'size': file_path.stat().st_size,
+                        'file_date': datetime.fromtimestamp(file_path.stat().st_ctime).date().isoformat()
                     }
                     self.save_state()
                     
@@ -232,6 +252,7 @@ class HTTPFileTransfer:
         schedule.every().day.at("00:00").do(self.cleanup_old_state)
         
         logger.info(f"파일 전송 스케줄러 시작 (주기: {self.transfer_interval}분)")
+        logger.info(f"오늘 날짜 파일만 전송: {self.today_only}")
         
         while True:
             schedule.run_pending()
@@ -247,7 +268,8 @@ if __name__ == "__main__":
         "delete_after_transfer": False,
         "file_age_minutes": 10,
         "chunk_size_mb": 10,
-        "device_id": "jetson_nx_01"
+        "device_id": "jetson_nx_01",
+        "today_only": True  # 오늘 날짜 파일만 전송
     }
     
     # 설정 파일이 없으면 생성

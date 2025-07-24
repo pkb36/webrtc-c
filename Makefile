@@ -10,6 +10,7 @@ LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lm -Wl,-rpath,$(LIB_INST
 
 # 빌드 디렉토리 설정
 BUILD_DIR := build
+PYTHON_DIR := python
 OBJ_DIR := $(BUILD_DIR)/obj
 
 # 디렉토리 생성
@@ -76,6 +77,8 @@ install-to: $(TARGETS)
 	cp $(BUILD_DIR)/webrtc_sender $(DEST_DIR)/
 	cp $(BUILD_DIR)/curllib_test $(DEST_DIR)/
 	cp $(BUILD_DIR)/disk_check $(DEST_DIR)/
+	cp $(PYTHON_DIR)/camera.py $(DEST_DIR)/
+	cp $(PYTHON_DIR)/disk_manager.py $(DEST_DIR)/
 	@echo "Installation complete!"
 	
 # 정리

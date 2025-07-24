@@ -51,7 +51,7 @@ class CameraRecorder:
         self.config = camera_config
         self.base_output_dir = Path(output_dir)
         self.test_file = test_file
-        self.recording_enabled = True
+        self.recording_enabled = camera_config.get("recording_enabled", True)
         
         current_date = datetime.now().strftime("RECORD_%Y%m%d")
         self.output_dir = self.base_output_dir / current_date
@@ -154,7 +154,7 @@ class CameraRecorder:
                 
                 t. ! queue max-size-buffers=100 max-size-bytes=0 max-size-time=0 ! 
                 videoconvert name=videoconvert0 ! 
-                videoflip method={self.config['flip']} !
+                videoflip method={self.config.get("flip", 0)} !
                 video/x-raw, format=I420 !
                 nvvidconv ! 
                 video/x-raw(memory:NVMM), format=I420 ! 

@@ -52,22 +52,20 @@ class DiskCleaner:
         }
     
     def find_old_files(self, extensions=['.mp4', '.avi', '.mkv', '.mov', '.h264', '.h265']):
-        """오래된 파일 찾기 (RECORD 폴더 우선)"""
+        """오래된 파일 찾기 (RECORD 폴더 우선) - I/O 오류 처리 추가"""
         record_files = []
         event_files = []
+        failed_paths = []
         
         for ext in extensions:
-            for file_path in self.target_path.rglob(f'*{ext}'):
-                if file_path.is_file():
-                    stat = file_path.stat()
-                    file_info = {
-                        'path': file_path,
-                        'size': stat.st_size,
-                        'mtime': datetime.fromtimestamp(stat.st_mtime)
-                    }
-                    
+            try:
+                # rglob 대신 안전한 재귀 검색 사용
+                for file_info in self._safe_recursive_search(self.target_path, f'*{ext}'):
+                    if file_info is None:
+                        continue
+                        
                     # 파일이 속한 폴더 확인
-                    parent_folder = file_path.parent.name
+                    parent_folder = file_info['path'].parent.name
                     if parent_folder.startswith('RECORD_'):
                         file_info['type'] = 'RECORD'
                         record_files.append(file_info)
@@ -78,6 +76,13 @@ class DiskCleaner:
                         # RECORD/EVENT 폴더가 아닌 경우도 RECORD로 분류 (우선 삭제)
                         file_info['type'] = 'OTHER'
                         record_files.append(file_info)
+                        
+            except Exception as e:
+                self.logger.error(f"파일 검색 중 오류 ({ext}): {e}")
+                continue
+        
+        if failed_paths:
+            self.logger.warning(f"접근 실패한 경로: {len(failed_paths)}개")
         
         # 각각 날짜 순으로 정렬 (오래된 것부터)
         record_files.sort(key=lambda x: x['mtime'])
@@ -85,6 +90,53 @@ class DiskCleaner:
         
         # RECORD 파일을 먼저, 그 다음 EVENT 파일
         return record_files + event_files
+    
+    def _safe_recursive_search(self, path, pattern):
+        """안전한 재귀 파일 검색"""
+        try:
+            # 현재 디렉토리의 파일들 검사
+            try:
+                entries = list(os.scandir(path))
+            except OSError as e:
+                if e.errno == 5:  # Input/output error
+                    self.logger.warning(f"I/O 오류로 디렉토리 스캔 실패: {path}")
+                    return
+                else:
+                    self.logger.warning(f"디렉토리 접근 실패: {path} - {e}")
+                    return
+            
+            for entry in entries:
+                try:
+                    if entry.is_file():
+                        file_path = Path(entry.path)
+                        if file_path.match(pattern):
+                            try:
+                                stat = file_path.stat()
+                                yield {
+                                    'path': file_path,
+                                    'size': stat.st_size,
+                                    'mtime': datetime.fromtimestamp(stat.st_mtime)
+                                }
+                            except OSError as e:
+                                if e.errno == 5:
+                                    self.logger.warning(f"I/O 오류로 파일 정보 읽기 실패: {file_path}")
+                                else:
+                                    self.logger.warning(f"파일 정보 읽기 실패: {file_path} - {e}")
+                                continue
+                                
+                    elif entry.is_dir():
+                        # 재귀적으로 하위 디렉토리 검색
+                        yield from self._safe_recursive_search(Path(entry.path), pattern)
+                        
+                except OSError as e:
+                    if e.errno == 5:
+                        self.logger.warning(f"I/O 오류로 항목 접근 실패: {entry.path}")
+                    else:
+                        self.logger.warning(f"항목 접근 실패: {entry.path} - {e}")
+                    continue
+                    
+        except Exception as e:
+            self.logger.error(f"재귀 검색 중 예상치 못한 오류: {path} - {e}")
     
     def need_cleanup(self):
         """정리가 필요한지 확인"""
@@ -229,8 +281,18 @@ class DiskCleaner:
     
     def show_status(self):
         """현재 디스크 상태 표시"""
-        usage = self.get_disk_usage()
-        files = self.find_old_files()
+        try:
+            usage = self.get_disk_usage()
+        except Exception as e:
+            print(f"\n디스크 사용량 조회 실패: {e}")
+            return
+        
+        try:
+            files = self.find_old_files()
+        except Exception as e:
+            print(f"\n파일 목록 조회 실패: {e}")
+            print("I/O 오류가 발생했습니다. 하드웨어 점검이 필요할 수 있습니다.")
+            return
         
         # 타입별로 분류
         record_files = [f for f in files if f.get('type') == 'RECORD']
