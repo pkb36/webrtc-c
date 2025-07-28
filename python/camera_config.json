@@ -11,7 +11,8 @@
       "flip": 0,
       "bitrate": 2000000,
       "udp_host": "127.0.0.1",
-      "udp_port": 8877
+      "udp_port": 8877,
+      "recording_enabled": false
     },
     {
       "name": "Thermal_Camera",
@@ -23,7 +24,9 @@
       "flip": 0,
       "bitrate": 2000000,
       "udp_host": "127.0.0.1",
-      "udp_port": 8878
+      "udp_port": 8878,
+      "recording_enabled": false
+
     }
   ]
 }
