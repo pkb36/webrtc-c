@@ -91,7 +91,7 @@ void goto_ptz_preset(int index, int use_auto);
 extern void *receive_data(void *arg);
 extern SOCKETINFO *init_socket_server(int port, void *(*func_ptr)(void *), void (*process_data)(char *ptr, int len, void *arg));
 extern void process_data(char *buffer, int len, void *arg);
-extern char *get_global_ip();
+extern char *get_global_ip_with_timeout();
 extern void handle_custom_command(gJSONObj *jsonObj, send_message_func_t send_func);
 
 extern pthread_mutex_t g_send_info_mutex;
@@ -688,33 +688,38 @@ int get_service_address(char *address)
     return 1;
 }
 
-static void on_server_closed(SoupWebsocketConnection *conn G_GNUC_UNUSED, gpointer user_data G_GNUC_UNUSED)
+static gpointer check_ip_on_close_thread(gpointer data)
 {
-    g_app_state = SERVER_CLOSED;
-    cleanup_and_retry_connect("Server connection closed", 0);
-
     char line[256];
-
-    if (get_service_address(line) != 1)
-    {
-        glog_trace("update_http_service_ip\n");
+    
+    if (get_service_address(line) != 1) {
+        glog_trace("update_http_service_ip (async)\n");
         update_http_service_ip(&g_config);
     }
-    else
-    {
-        char *global_ip = get_global_ip();
+    else {
+        // get_global_ip_with_timeout 사용
+        char *global_ip = get_global_ip_with_timeout();
         char *ip_address = extract_ip(line);
 
-        if (global_ip)
-        {
-            if (strcmp(global_ip, ip_address) != 0)
-            {
-                glog_trace("global_ip=%s, ip_address=%s, update_http_service_ip\n", global_ip, ip_address);
+        if (global_ip) {
+            if (strcmp(global_ip, ip_address) != 0) {
+                glog_trace("global_ip=%s, ip_address=%s, update_http_service_ip (async)\n", 
+                          global_ip, ip_address);
                 update_http_service_ip(&g_config);
             }
             free(global_ip);
         }
     }
+    
+    return NULL;
+}
+
+static void on_server_closed(SoupWebsocketConnection *conn G_GNUC_UNUSED, gpointer user_data G_GNUC_UNUSED)
+{
+    g_app_state = SERVER_CLOSED;
+    cleanup_and_retry_connect("Server connection closed", 0);
+
+    g_thread_new("ip-check-on-close", check_ip_on_close_thread, NULL);
 }
 
 #if MINDULE_INCLUDE

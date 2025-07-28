@@ -439,6 +439,36 @@ class CameraRecorder:
             logger.error(f"{self.config['name']}: Fallback 파이프라인 시작 실패")
         else:
             logger.info(f"{self.config['name']}: Fallback 모드로 전환 완료")
+
+    def check_camera_recovery(self):
+        """Fallback 모드에서 카메라 복구 가능 여부 확인"""
+        if not self.use_fallback:
+            return False
+            
+        device_path = f"/dev/video{self.config['device_id']}"
+        
+        # 1. 장치 파일 존재 확인
+        if not os.path.exists(device_path):
+            return False
+        
+        # 2. v4l2-ctl로 장치 상태 확인 (외부 명령)
+        try:
+            result = subprocess.run(
+                ['v4l2-ctl', '--device', device_path, '--all'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            
+            # 정상적인 출력이 있고 에러가 없으면 복구 가능
+            if result.returncode == 0 and "Cannot open" not in result.stderr:
+                logger.info(f"{self.config['name']}: 카메라 복구 가능 감지")
+                return True
+                
+        except Exception as e:
+            logger.debug(f"카메라 체크 실패: {e}")
+            
+        return False
             
     def watchdog_thread_func(self):
         """프레임 수신 모니터링 스레드"""
@@ -456,7 +486,10 @@ class CameraRecorder:
                         
                         # 재시작 후 대기
                         time.sleep(self.frame_timeout)
-                        
+
+                if self.use_fallback:
+                    self.check_camera_availability()
+
                 # 1초마다 체크
                 time.sleep(1.0)
                 

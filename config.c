@@ -312,46 +312,6 @@ size_t write_callback(void *ptr, size_t size, size_t nmemb, char *data)
     return size * nmemb;
 }
 
-// Function to get the global IP address using ipify API
-char *get_global_ip()
-{
-    CURL *curl;
-    CURLcode res;
-    char *ip = (char *)malloc(100); // Allocate memory for the IP address
-    ip[0] = '\0';                   // Initialize the IP string as empty
-
-    // Initialize curl
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-    curl = curl_easy_init();
-
-    if (curl)
-    {
-        // Set the URL for ipify API
-        curl_easy_setopt(curl, CURLOPT_URL, "https://api.ipify.org?format=text");
-
-        // Set the callback function to handle the response
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, ip);
-
-        // Perform the request
-        res = curl_easy_perform(curl);
-
-        // Check if the request was successful
-        if (res != CURLE_OK)
-        {
-            fprintf(stderr, "Request failed: %s\n", curl_easy_strerror(res));
-            free(ip); // Free the allocated memory in case of error
-            ip = NULL;
-        }
-
-        // Cleanup
-        curl_easy_cleanup(curl);
-    }
-
-    curl_global_cleanup();
-    return ip;
-}
-
 void get_local_ip(char *ip_str)
 {
     struct ifaddrs *ifap, *ifa;
@@ -404,32 +364,77 @@ void write_lines_to_file(const char *filename, char *line1, char *line2)
     printf("Lines written to file successfully.\n");
 }
 
+char *get_global_ip_with_timeout()
+{
+    CURL *curl;
+    char *ip = (char *)malloc(100);
+    ip[0] = '\0';
+    
+    curl = curl_easy_init();
+    if (curl) {
+        // 타임아웃 설정 추가
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+        
+        // HTTP 사용 (HTTPS보다 빠름)
+        curl_easy_setopt(curl, CURLOPT_URL, "http://ifconfig.me/ip");
+        
+        // 나머지는 기존 코드와 동일
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, ip);
+        
+        CURLcode res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            free(ip);
+            ip = NULL;
+        }
+        
+        curl_easy_cleanup(curl);
+    }
+    
+    return ip;
+}
+
+static gpointer update_external_ip_thread(gpointer data)
+{
+    WebRTCConfig *config = (WebRTCConfig *)data;
+    char *global_ip = get_global_ip_with_timeout();  // 타임아웃 추가된 버전
+    
+    if (global_ip) {
+        char *new_ip = g_strdup_printf("%s:%d", global_ip, config->http_service_port);
+        
+        // 안전하게 교체
+        char *old_ip = config->http_service_ip;
+        config->http_service_ip = new_ip;
+        g_free(old_ip);
+        
+        glog_trace("Updated http_service_ip to external: %s\n", config->http_service_ip);
+        
+        // local_ip.log 파일 업데이트
+        char local_ip[100];
+        get_local_ip(local_ip);
+        write_lines_to_file("local_ip.log", local_ip, new_ip);
+        
+        free(global_ip);
+    }
+    
+    return NULL;
+}
+
 void update_http_service_ip(WebRTCConfig *config)
 {
-    char lines[2][100];
-    char *global_ip = get_global_ip();
-
-    lines[0][0] = 0;
-    lines[1][0] = 0;
-    if (global_ip)
-    {
-        glog_trace("My global IP address is: %s, port: %d\n", global_ip, config->http_service_port);
-        sprintf(lines[1], "%s:%d", global_ip, config->http_service_port);
-        free(global_ip); // Don't forget to free the allocated memory
-    }
-    else
-    {
-        glog_trace("Failed to retrieve global IP address.\n");
-        get_service_address(lines[1]);
-    }
+    char local_ip[100];
+    get_local_ip(local_ip);
+    
+    // 일단 로컬 IP로 즉시 설정
     if (config->http_service_ip)
         free(config->http_service_ip);
-    config->http_service_ip = strdup(lines[1]);
-    get_local_ip(lines[0]);
-    if (global_ip)
-        write_lines_to_file("local_ip.log", lines[0], lines[1]);
-    glog_trace("local IP=%s, global IP:Port=%s\n", lines[0], lines[1]);
-    glog_trace("set config->http_service_ip as %s\n", config->http_service_ip);
+    config->http_service_ip = g_strdup_printf("%s:%d", local_ip, config->http_service_port);
+    
+    glog_trace("Initial http_service_ip set to local: %s\n", config->http_service_ip);
+    
+    // 백그라운드에서 외부 IP 업데이트
+    g_thread_new("external-ip-update", update_external_ip_thread, config);
 }
 
 /*
