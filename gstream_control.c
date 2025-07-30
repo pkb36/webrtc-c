@@ -533,6 +533,16 @@ gboolean process_message_cmd(gJSONObj *jsonObj)
         }
         send_ptz_move_serial_data(msg);
     }
+    else if (json_object_has_member(object, "ptz_move_control"))
+    {
+        const gchar *msg;
+        if (!cockpit_json_get_string(object, "ptz_move_control", NULL, &msg, FALSE))
+        {
+            glog_trace("Can not get message PTZ Move Command\n");
+            return FALSE;
+        }
+        send_ptz_move_serial_data_immediate(msg);
+    }
     else if (json_object_has_member(object, "record"))
     {
         const gchar *on_off;

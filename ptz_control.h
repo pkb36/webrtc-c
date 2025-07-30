@@ -67,6 +67,8 @@ int auto_move_ptz(const char* move_seq);
 int get_pt_status();
 
 void send_ptz_move_serial_data(const char *s);
+void send_ptz_move_serial_data_immediate(const char *s);
+
 gboolean send_ptz_move_cmd(int direction, int ptz_speed);
 gboolean move_and_stop_ptz(int direction, int ptz_speed, int ptz_delay);
 gboolean is_ptz_motion_stopped();
@@ -99,6 +101,8 @@ void display_auto_ptz_status(void);
 int goto_preset(int preset_index, int use_auto_preset);
 int goto_manual_preset(int preset_index);
 int goto_auto_preset(int preset_index);
+void move_and_stop_ptz_immediate(int direction, int speed);
+void update_ptz_watchdog(void);
 
 // 전역 변수
 extern int ptz_err_code;

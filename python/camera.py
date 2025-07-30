@@ -222,6 +222,7 @@ class CameraRecorder:
         
         # 파일명 생성
         filename = current_time.strftime(f"CAM{cam_id}_%H%M%S.mp4")
+        # filename = current_time.strftime(f"CAM{cam_id}_%Y%m%d_%H%M%S.mp4")
         full_path = str(output_dir / filename)
         
         # 프레임 수신 시간 업데이트 (파일이 생성된다는 것은 데이터가 들어온다는 의미)
@@ -322,41 +323,20 @@ class CameraRecorder:
 
     def _get_file_source(self):
         """MP4 파일 소스 GStreamer 엘리먼트"""
-        # 파일 존재 확인 (파일이 지정된 경우)
-        if self.test_file and self.test_file != "test":
-            if not Path(self.test_file).exists():
-                logger.error(f"테스트 파일을 찾을 수 없습니다: {self.test_file}")
-                raise FileNotFoundError(f"Test file not found: {self.test_file}")
-            
-            logger.info(f"테스트 파일 사용: {self.test_file}")
-            
-            # 절대 경로 가져오기
-            abs_path = os.path.abspath(self.test_file)
-            
-            # parsebin을 사용하여 동적 패드 문제 해결
-            # parsebin은 자동으로 demuxer와 parser를 처리
-            return (
-                f"filesrc location={abs_path} ! "
-                f"parsebin ! "
-                f"nvv4l2decoder ! "
-                f"nvvidconv ! "
-                f"video/x-raw, format=I420 ! "
-                f"videoscale ! "
-                f"video/x-raw, width={self.config['width']}, height={self.config['height']} ! "
-                f"videorate ! "
-                f"video/x-raw, framerate=10/1"
-            )
-        else:
-            # 테스트 패턴 사용 (파일 없이 테스트)
-            logger.info(f"테스트 패턴 사용 (videotestsrc)")
-            
-            # videotestsrc로 테스트 패턴 생성
-            # pattern: 0=smpte, 1=snow, 2=black, 18=ball, 19=smpte75
-            return (
-                f"videotestsrc pattern=0 ! "
-                f"video/x-raw, format=I420, width={self.config['width']}, "
-                f"height={self.config['height']}, framerate={self.config['fps']}/1"
-            )
+        rtsp_url = "rtsp://121.67.120.195:8554/stream"
+
+        return (
+            f"rtspsrc location={rtsp_url} latency=0 ! "
+            f"rtph264depay ! "
+            f"h264parse ! "
+            f"nvv4l2decoder ! "
+            f"nvvidconv ! "
+            f"video/x-raw, format=I420 ! "
+            f"videoscale ! "
+            f"video/x-raw, width={self.config['width']}, height={self.config['height']} ! "
+            f"videorate ! "
+            f"video/x-raw, framerate=10/1"
+        )
 
     def _get_encoder_settings(self):
         """인코더 설정"""
@@ -969,18 +949,18 @@ def main():
         return
 
     test_files = {}
-    if args.test:
-        if args.file:
-            test_files['default'] = args.file
-        if args.rgb_file:
-            test_files['RGB_Camera'] = args.rgb_file
-        if args.thermal_file:
-            test_files['Thermal_Camera'] = args.thermal_file
+    # if args.test:
+    #     if args.file:
+    #         test_files['default'] = args.file
+    #     if args.rgb_file:
+    #         test_files['RGB_Camera'] = args.rgb_file
+    #     if args.thermal_file:
+    #         test_files['Thermal_Camera'] = args.thermal_file
             
-        if not test_files:
-            logger.error("테스트 모드에서는 최소 하나의 MP4 파일을 지정해야 합니다.")
-            logger.error("사용법: python camera.py --test --file test.mp4")
-            return
+    #     if not test_files:
+    #         logger.error("테스트 모드에서는 최소 하나의 MP4 파일을 지정해야 합니다.")
+    #         logger.error("사용법: python camera.py --test --file test.mp4")
+    #         return
             
     # 시스템 생성 및 실행
     system = DualCameraSystem(config_file=args.config, 
