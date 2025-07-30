@@ -43,17 +43,19 @@ int ptz_err_code = PTZ_NORMAL;
 int g_move_speed;
 int g_preset_index = 0;
 
-static gboolean ptz_watchdog_callback(gpointer user_data) {
-    time_t current_time = time(NULL);
-    
-    // 마지막 명령 후 2초 이상 경과시 자동 정지
-    if (g_move_speed > 0 && (current_time - last_ptz_command_time) > 2) {
-        glog_info("PTZ watchdog: No command received for 2 seconds, stopping PTZ\n");
-        send_ptz_move_cmd(0, 0);  // 강제 정지
-        g_move_speed = 0;
-    }
-    
-    return G_SOURCE_CONTINUE;
+static gboolean ptz_watchdog_callback(gpointer user_data)
+{
+  time_t current_time = time(NULL);
+
+  // 마지막 명령 후 2초 이상 경과시 자동 정지
+  if (g_move_speed > 0 && (current_time - last_ptz_command_time) > 2)
+  {
+    glog_info("PTZ watchdog: No command received for 2 seconds, stopping PTZ\n");
+    send_ptz_move_cmd(0, 0); // 강제 정지
+    g_move_speed = 0;
+  }
+
+  return G_SOURCE_CONTINUE;
 }
 
 const char *get_ptz_error_string(PTZErrorCode code)
@@ -78,13 +80,15 @@ const char *get_ptz_error_string(PTZErrorCode code)
 }
 
 // PTZ 명령 수신시 호출
-void update_ptz_watchdog(void) {
-    last_ptz_command_time = time(NULL);
-    
-    // 워치독 타이머가 없으면 생성
-    if (ptz_watchdog_timer == 0) {
-        ptz_watchdog_timer = g_timeout_add(500, ptz_watchdog_callback, NULL);
-    }
+void update_ptz_watchdog(void)
+{
+  last_ptz_command_time = time(NULL);
+
+  // 워치독 타이머가 없으면 생성
+  if (ptz_watchdog_timer == 0)
+  {
+    ptz_watchdog_timer = g_timeout_add(500, ptz_watchdog_callback, NULL);
+  }
 }
 
 void set_ptz_move_speed(int move, int auto_ptz)
@@ -660,8 +664,15 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
     return FALSE;
   }
 
+  if (g_cow_tracking_state.is_tracking && ptz_speed > 0)
+  {
+    // glog_info("Manual PTZ command blocked during auto tracking\n");
+    return FALSE;
+  }
+
   unsigned char read_data[7] = {0}, data[11];
-  char direction_str[][12] = {"left", "right", "top", "bottom", "zoom in", "zoom out"};
+  char direction_str[][12] = {"left", "right", "top", "bottom", "zoom in", "zoom out",
+                              "top-left", "top-right", "bottom-left", "bottom-right"};
   int len = 0, size = sizeof(direction_str) / sizeof(direction_str[0]);
 
   if (size > direction && direction >= 0)
@@ -681,8 +692,9 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
     return FALSE;
   }
 
-  if (ptz_speed > 0) {
-      update_ptz_watchdog();
+  if (ptz_speed > 0)
+  {
+    update_ptz_watchdog();
   }
 
   memset(data, 0x00, sizeof(data));
@@ -703,34 +715,63 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
     if (direction == 0)
     { // Left
       data[len++] = 0x40;
+      data[len] = ptz_speed;
     }
     else if (direction == 1)
     { // Right
       data[len++] = 0x80;
+      data[len] = ptz_speed;
     }
     else if (direction == 2)
     { // Top
       data[len++] = 0x10;
       data[len++] = 0x00;
+      data[len] = ptz_speed;
     }
     else if (direction == 3)
     { // Bottom
       data[len++] = 0x20;
       data[len++] = 0x00;
+      data[len] = ptz_speed;
     }
     else if (direction == 4)
     { // Zoom in
       data[len++] = 0x04;
       data[len++] = 0x00;
       data[len++] = 0x00;
+      data[len] = ptz_speed;
     }
     else if (direction == 5)
     { // Zoom out
       data[len++] = 0x08;
       data[len++] = 0x00;
       data[len++] = 0x00;
+      data[len] = ptz_speed;
     }
-    data[len] = ptz_speed; // PTZ speed
+    else if (direction == 9) // Top-Left (대각선)
+    {
+      data[len++] = 0xA0; // 0x80 (Pan Left) | 0x20 (Tilt Up) = 0xA0
+      data[len++] = ptz_speed;
+      data[len] = ptz_speed;
+    }
+    else if (direction == 8) // Top-Right (대각선) 8
+    {
+      data[len++] = 0x60; // 0x40 (Pan Right) | 0x20 (Tilt Up) = 0x60
+      data[len++] = ptz_speed;
+      data[len] = ptz_speed;
+    }
+    else if (direction == 7) // Bottom-Left (대각선) 7
+    {
+      data[len++] = 0x90; // 0x80 (Pan Left) | 0x10 (Tilt Down) = 0x90
+      data[len++] = ptz_speed;
+      data[len] = ptz_speed;
+    }
+    else if (direction == 6) // Bottom-Right (대각선) 6
+    {
+      data[len++] = 0x50; // 0x40 (Pan Right) | 0x10 (Tilt Down) = 0x50
+      data[len++] = ptz_speed;
+      data[len] = ptz_speed;
+    }
   }
 
   data[10] = get_checksum(data, 10);
@@ -777,6 +818,69 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
   g_move_speed = ptz_speed;
   // glog_trace("set g_move_speed = %d\n", g_move_speed);
 
+  return TRUE;
+}
+
+gboolean send_ptz_diagonal_move(int pan_direction, int tilt_direction, int speed)
+{
+  unsigned char data[21];
+  int len = 0;
+
+  // 현재 위치 읽기
+  unsigned char current_pos[17];
+  unsigned char cmd_get_pos[7] = {0x96, 0x00, 0x06, 0x01, 0x01, 0x01, 0x9F};
+  if (read_cmd_timeout(cmd_get_pos, 7, current_pos, 17, 1) < 0)
+  {
+    return FALSE;
+  }
+
+  // 현재 위치 파싱
+  int current_pan = (current_pos[6] << 8) | current_pos[5];
+  int current_tilt = (current_pos[8] << 8) | current_pos[7];
+
+  // 목표 위치 계산 (예: 100 단위씩 이동)
+  int target_pan = current_pan;
+  int target_tilt = current_tilt;
+
+  if (pan_direction == 0)
+    target_pan -= 100; // left
+  else if (pan_direction == 1)
+    target_pan += 100; // right
+
+  if (tilt_direction == 0)
+    target_tilt += 100; // up
+  else if (tilt_direction == 1)
+    target_tilt -= 100; // down
+
+  // Set All Position 패킷 구성
+  data[len++] = 0x96; // Sync
+  data[len++] = 0x00; // Addr
+  data[len++] = 0x01; // CmdL
+  data[len++] = 0x41; // CmdH (no response)
+  data[len++] = 0x0F; // Data Size (15 bytes)
+
+  // Pan position
+  data[len++] = target_pan & 0xFF;
+  data[len++] = (target_pan >> 8) & 0xFF;
+
+  // Tilt position
+  data[len++] = target_tilt & 0xFF;
+  data[len++] = (target_tilt >> 8) & 0xFF;
+
+  // Zoom, Focus (현재 값 유지)
+  memcpy(&data[len], &current_pos[9], 6);
+  len += 6;
+
+  // Speeds
+  data[len++] = speed; // Pan speed
+  data[len++] = speed; // Tilt speed
+  data[len++] = 0x00;  // Zoom speed
+  data[len++] = 0x00;  // Focus speed
+  data[len++] = 0x00;  // Pan direction
+
+  data[20] = get_checksum(data, 20);
+
+  write_serial(data, 21);
   return TRUE;
 }
 
@@ -1186,7 +1290,12 @@ void move_and_stop_ptz_immediate(int direction, int speed)
   if (speed > 0)
   {
     // 이동 시작
+    // if (direction >= 0 && direction <= 5)
     send_ptz_move_cmd(direction, speed);
+    // else
+    // {
+    //   send_ptz_diagonal_move(direction - 6, direction - 6, speed);
+    // }
     g_move_speed = speed;
   }
   else

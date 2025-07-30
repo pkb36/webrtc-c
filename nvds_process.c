@@ -30,11 +30,14 @@
 #include "nvds_utils.h"
 #include "circular_buffer.h"
 #include "ptz_control.h"
+#include "serial_comm.h"
 
 static int *g_cam_indices = NULL;
 #define MAX_OPT_FLOW_ITERATIONS 1000
 #define MAX_DETECTION_BUFFER_SIZE 10000 // 최대 10000 프레임
 #define BUFFER_DURATION_SEC 120			// 120초 버퍼
+
+CowTrackingState g_cow_tracking_state = {0};
 
 int g_cam_index = 0;
 int g_noti_cam_idx = 0;
@@ -50,13 +53,14 @@ Timer timers[MAX_PTZ_PRESET];
 static int g_event_sender_running = 1;
 ObjMonitor obj_info[NUM_CAMS][NUM_OBJS];
 
-typedef struct {
-    double last_event_time[NUM_CLASSES][NUM_CAMS];
-    double throttle_interval;  // 필터링 간격 (초)
+typedef struct
+{
+	double last_event_time[NUM_CLASSES][NUM_CAMS];
+	double throttle_interval; // 필터링 간격 (초)
 } EventThrottle;
 
 static EventThrottle g_event_throttle = {
-    .throttle_interval = 60.0  // 10초 간격
+	.throttle_interval = 60.0 // 10초 간격
 };
 
 int threshold_event_duration[NUM_CLASSES] =
@@ -69,7 +73,7 @@ int threshold_event_duration[NUM_CLASSES] =
 };
 
 float threshold_confidence[NUM_CLASSES] =
-{
+	{
 		0.2, // NORMAL
 		0.8, // HEAT
 		0.8, // FLIP
@@ -79,14 +83,14 @@ float threshold_confidence[NUM_CLASSES] =
 
 void *event_sender_thread(void *arg)
 {
-    while (g_event_sender_running)
-    {
-        if (g_event_class_id != CLASS_NORMAL_COW && g_event_class_id != EVENT_EXIT)
-        {
-            int class_id = g_event_class_id;
-            g_event_class_id = CLASS_NORMAL_COW;  // 초기화
-            
-            int ret = send_notification_to_server(class_id);
+	while (g_event_sender_running)
+	{
+		if (g_event_class_id != CLASS_NORMAL_COW && g_event_class_id != EVENT_EXIT)
+		{
+			int class_id = g_event_class_id;
+			g_event_class_id = CLASS_NORMAL_COW; // 초기화
+
+			int ret = send_notification_to_server(class_id);
 			if (ret < 1)
 			{
 				glog_error("Failed to send event notification to server for class %d\n", class_id);
@@ -95,12 +99,12 @@ void *event_sender_thread(void *arg)
 			{
 				glog_info("Event notification sent successfully for class %d\n", class_id);
 			}
-        }
-        
-        usleep(100000);  // 100ms 대기
-    }
-    
-    return NULL;
+		}
+
+		usleep(100000); // 100ms 대기
+	}
+
+	return NULL;
 }
 
 static gboolean event_recording_timeout(gpointer data)
@@ -185,46 +189,51 @@ BboxColor get_object_color(guint camera_id, guint object_id, gint class_id)
 void set_process_analysis(gboolean OnOff)
 {
 	printf("set_process_analysis OnOff=%d\n", OnOff);
-    if (OnOff == 0)
-        check_events_for_notification(0, 1);
+	if (OnOff == 0)
+		check_events_for_notification(0, 1);
 
-    gboolean all_success = TRUE;
+	gboolean all_success = TRUE;
 
-    for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
-    {
-        char element_name[32];
+	for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
+	{
+		char element_name[32];
 		GstElement *nvinfer;
-		sprintf(element_name, "nvinfer_%d", cam_idx+1);
-		nvinfer = gst_bin_get_by_name (GST_BIN (g_pipeline), element_name);
-		if (nvinfer == NULL){
-			glog_trace ("Fail get %s element\n", element_name);
+		sprintf(element_name, "nvinfer_%d", cam_idx + 1);
+		nvinfer = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
+		if (nvinfer == NULL)
+		{
+			glog_trace("Fail get %s element\n", element_name);
 			continue;
 		}
 
 		gint interval = OnOff ? g_setting.nv_interval : G_MAXINT;
 		g_object_set(G_OBJECT(nvinfer), "interval", interval, NULL);
-		g_clear_object (&nvinfer);
+		g_clear_object(&nvinfer);
 
-        GstElement *dspostproc = NULL;
-        
-        // dspostproc 처리
-        sprintf(element_name, "dspostproc_%d", cam_idx + 1);
-        dspostproc = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
-        if (dspostproc) {
-            gboolean reset_val = OnOff ? FALSE : TRUE;
-            g_object_set(G_OBJECT(dspostproc), "reset-object", reset_val, NULL);
-            g_clear_object(&dspostproc);
-        } else {
-            glog_error("Failed to get %s element\n", element_name);
-            all_success = FALSE;
-        }
-    }
+		GstElement *dspostproc = NULL;
+
+		// dspostproc 처리
+		sprintf(element_name, "dspostproc_%d", cam_idx + 1);
+		dspostproc = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
+		if (dspostproc)
+		{
+			gboolean reset_val = OnOff ? FALSE : TRUE;
+			g_object_set(G_OBJECT(dspostproc), "reset-object", reset_val, NULL);
+			g_clear_object(&dspostproc);
+		}
+		else
+		{
+			glog_error("Failed to get %s element\n", element_name);
+			all_success = FALSE;
+		}
+	}
 
 	printf("set_process_analysis: OnOff=%d, all_success=%d\n", OnOff, all_success);
-    
-    if (!all_success) {
-        glog_error("Some elements failed to update\n");
-    }
+
+	if (!all_success)
+	{
+		glog_error("Some elements failed to update\n");
+	}
 }
 
 int is_process_running(const char *process_name)
@@ -252,21 +261,22 @@ int is_process_running(const char *process_name)
 
 gboolean send_event_to_recorder_simple(int class_id, int camera_id)
 {
-	const AutoPTZState* ptz_state = get_auto_ptz_state();
+	// const AutoPTZState *ptz_state = get_auto_ptz_state();
 
 	struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    double event_time = ts.tv_sec + ts.tv_nsec / 1e9;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	double event_time = ts.tv_sec + ts.tv_nsec / 1e9;
 
 	double time_diff = event_time - g_event_throttle.last_event_time[class_id][camera_id];
 
 	// if (ptz_state->is_running == FALSE && time_diff < g_event_throttle.throttle_interval) {
-	if (time_diff < g_event_throttle.throttle_interval) {
-        // 너무 빈번한 이벤트는 필터링
-        glog_debug("Event filtered: class=%d, camera=%d, time_diff=%.1f\n", 
-                   class_id, camera_id, time_diff);
-        return FALSE;
-    }
+	if (time_diff < g_event_throttle.throttle_interval)
+	{
+		// 너무 빈번한 이벤트는 필터링
+		glog_debug("Event filtered: class=%d, camera=%d, time_diff=%.1f\n",
+				   class_id, camera_id, time_diff);
+		return FALSE;
+	}
 
 	on_event_detected(camera_id, class_id, event_time);
 
@@ -385,6 +395,20 @@ void check_events_for_notification(int cam_idx, int init)
 				obj_info[cam_idx][obj_id].duration = 0;
 				// check_for_zoomin(g_total_rect_size, detect_count);      //LJH, in progress
 				obj_info[cam_idx][obj_id].notification_flag = 1; // send notification later
+
+				if ((obj_info[cam_idx][obj_id].class_id == CLASS_FLIP_COW ||
+					 obj_info[cam_idx][obj_id].class_id == CLASS_LABOR_SIGN_COW))
+				{ // 설정에서 자동 트래킹 활성화 여부 확인
+
+					start_cow_tracking(
+						obj_id,
+						obj_info[cam_idx][obj_id].class_id,
+						obj_info[cam_idx][obj_id].x,
+						obj_info[cam_idx][obj_id].y,
+						obj_info[cam_idx][obj_id].width,
+						obj_info[cam_idx][obj_id].height);
+				}
+
 #if RESNET_50
 				if (g_setting.resnet50_apply)
 				{
@@ -588,224 +612,238 @@ int get_heat_color_over_threshold(int cam_idx, int obj_id)
 
 void process_opt_flow(NvDsFrameMeta *frame_meta, int cam_idx, int obj_id, int cam_sec_interval)
 {
-    if (obj_id < 0)
-        return;
+	if (obj_id < 0)
+		return;
 
-    int count = 0;
-    double move_size = 0.0, move_size_total = 0.0, move_size_avg = 0.0;
-    double diagonal = 0;
-    int row_start = 0, col_start = 0, row_num = 0, col_num = 0;
-    int rows = 0, cols = 0;  // rows 추가
-    int corr_value = 0;
-    int bbox_move = 0, rect_size_change = 0;
+	int count = 0;
+	double move_size = 0.0, move_size_total = 0.0, move_size_avg = 0.0;
+	double diagonal = 0;
+	int row_start = 0, col_start = 0, row_num = 0, col_num = 0;
+	int rows = 0, cols = 0; // rows 추가
+	int corr_value = 0;
+	int bbox_move = 0, rect_size_change = 0;
 
-    // glog_trace("[process_opt_flow] START - cam_idx=%d, obj_id=%d\n", cam_idx, obj_id);
+	// glog_trace("[process_opt_flow] START - cam_idx=%d, obj_id=%d\n", cam_idx, obj_id);
 
-    for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next)
-    {
-        NvDsUserMeta *user_meta = (NvDsUserMeta *)(l_user->data);
-        
-        if (user_meta->base_meta.meta_type == NVDS_OPTICAL_FLOW_META)
-        {
-            // glog_trace("[process_opt_flow] Found optical flow metadata\n");
-            
-            NvDsOpticalFlowMeta *opt_flow_meta = (NvDsOpticalFlowMeta *)(user_meta->user_meta_data);
-            
-            if (!opt_flow_meta || !opt_flow_meta->data) {
-                glog_error("[process_opt_flow] ERROR: NULL metadata!\n");
-                continue;
-            }
-            
-            rows = opt_flow_meta->rows;  // ✅ rows 값 저장
-            cols = opt_flow_meta->cols;
-            NvOFFlowVector *flow_vectors = (NvOFFlowVector *)(opt_flow_meta->data);
-            
-            // glog_trace("[process_opt_flow] Flow grid: rows=%d, cols=%d, total_size=%d\n", 
-            //            rows, cols, rows * cols);
-            
-            // ✅ 좌표 변환 수정: x는 column, y는 row
-            col_start = obj_info[cam_idx][obj_id].x / 4;      // x → col
-            row_start = obj_info[cam_idx][obj_id].y / 4;      // y → row
-            col_num = obj_info[cam_idx][obj_id].width / 4;    // width → col 개수
-            row_num = obj_info[cam_idx][obj_id].height / 4;   // height → row 개수
-            
-            // ✅ 경계 체크 및 조정
-            if (col_start < 0) col_start = 0;
-            if (row_start < 0) row_start = 0;
-            if (col_start >= cols) col_start = cols - 1;
-            if (row_start >= rows) row_start = rows - 1;
-            
-            if (col_start + col_num > cols) col_num = cols - col_start;
-            if (row_start + row_num > rows) row_num = rows - row_start;
-            
-            // glog_trace("[process_opt_flow] Adjusted bounds: row[%d-%d), col[%d-%d)\n",
-            //            row_start, row_start + row_num, col_start, col_start + col_num);
-            
-            diagonal = obj_info[cam_idx][obj_id].diagonal;
-            move_size_total = 0.0;
-            count = 0;
-            
-            // Process the motion vectors
-            for (int row = row_start; row < (row_start + row_num) && row < rows; ++row)
-            {
-                for (int col = col_start; col < (col_start + col_num) && col < cols; ++col)
-                {
-                    int index = row * cols + col;
-                    int max_index = rows * cols;
-                    
-                    if (index < 0 || index >= max_index) {
-                        glog_error("[process_opt_flow] Index still out of bounds! index=%d, max=%d\n",
-                                   index, max_index);
-                        continue;
-                    }
-                    
-                    NvOFFlowVector flow_vector = flow_vectors[index];
-                    move_size = calculate_sqrt(flow_vector.flowx, flow_vector.flowy);
-                    move_size_total += move_size;
-                    count++;
-                }
-            }
-            
-            // glog_trace("[process_opt_flow] Processed %d flow vectors\n", count);
-            
-            if (count > 0)
-            {
-                move_size_avg = move_size_total / (double)count;
-                obj_info[cam_idx][obj_id].opt_flow_check_count++;
-                obj_info[cam_idx][obj_id].move_size_avg = update_average(
-                    obj_info[cam_idx][obj_id].move_size_avg,
-                    obj_info[cam_idx][obj_id].opt_flow_check_count, 
-                    move_size_avg);
-            }
-            
-            if (cam_sec_interval)
-            {
-                bbox_move = get_move_distance(cam_idx, obj_id);
-                rect_size_change = get_rect_size_change(cam_idx, obj_id);
-                set_prev_xy(cam_idx, obj_id);
-                set_prev_rect_size(cam_idx, obj_id);
+	for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next)
+	{
+		NvDsUserMeta *user_meta = (NvDsUserMeta *)(l_user->data);
 
-                if (obj_info[cam_idx][obj_id].move_size_avg > 0)
-                {
-                    glog_trace("[SEC] [%d][%d].move_size_avg=%.1f,confi=%.2f,diag=%.1f\n", 
-                               cam_idx, obj_id,
-                               obj_info[cam_idx][obj_id].move_size_avg, 
-                               obj_info[cam_idx][obj_id].confidence, 
-                               diagonal);
-                }
+		if (user_meta->base_meta.meta_type == NVDS_OPTICAL_FLOW_META)
+		{
+			// glog_trace("[process_opt_flow] Found optical flow metadata\n");
 
-                if (bbox_move < THRESHOLD_BBOX_MOVE && 
-                    rect_size_change < THRESHOLD_RECT_SIZE_CHANGE && 
-                    g_move_speed == 0)
-                {
-                    corr_value = get_correction_value(diagonal);
-                    if (cam_idx == RGB_CAM)
-                    {
-                        corr_value += 9;
-                    }
-                    
-                    if (obj_info[cam_idx][obj_id].move_size_avg > 
-                        (g_setting.opt_flow_threshold + corr_value))
-                    {
-                        obj_info[cam_idx][obj_id].opt_flow_detected_count++;
-                        glog_trace("[%d][%d].opt_flow_detected_count ==> %d\n", 
-                                   cam_idx, obj_id, 
-                                   obj_info[cam_idx][obj_id].opt_flow_detected_count);
-                    }
-                }
-                else
-                {
-                    glog_trace("[SEC] bbox_move=%d,rect_size_change=%d,g_move_speed=%d\n", 
-                               bbox_move, rect_size_change, g_move_speed);
-                }
-                
-                init_opt_flow(cam_idx, obj_id, 0);
-            }
-        }
-    }
-    
-    // glog_trace("[process_opt_flow] END\n");
+			NvDsOpticalFlowMeta *opt_flow_meta = (NvDsOpticalFlowMeta *)(user_meta->user_meta_data);
+
+			if (!opt_flow_meta || !opt_flow_meta->data)
+			{
+				glog_error("[process_opt_flow] ERROR: NULL metadata!\n");
+				continue;
+			}
+
+			rows = opt_flow_meta->rows; // ✅ rows 값 저장
+			cols = opt_flow_meta->cols;
+			NvOFFlowVector *flow_vectors = (NvOFFlowVector *)(opt_flow_meta->data);
+
+			// glog_trace("[process_opt_flow] Flow grid: rows=%d, cols=%d, total_size=%d\n",
+			//            rows, cols, rows * cols);
+
+			// ✅ 좌표 변환 수정: x는 column, y는 row
+			col_start = obj_info[cam_idx][obj_id].x / 4;	// x → col
+			row_start = obj_info[cam_idx][obj_id].y / 4;	// y → row
+			col_num = obj_info[cam_idx][obj_id].width / 4;	// width → col 개수
+			row_num = obj_info[cam_idx][obj_id].height / 4; // height → row 개수
+
+			// ✅ 경계 체크 및 조정
+			if (col_start < 0)
+				col_start = 0;
+			if (row_start < 0)
+				row_start = 0;
+			if (col_start >= cols)
+				col_start = cols - 1;
+			if (row_start >= rows)
+				row_start = rows - 1;
+
+			if (col_start + col_num > cols)
+				col_num = cols - col_start;
+			if (row_start + row_num > rows)
+				row_num = rows - row_start;
+
+			// glog_trace("[process_opt_flow] Adjusted bounds: row[%d-%d), col[%d-%d)\n",
+			//            row_start, row_start + row_num, col_start, col_start + col_num);
+
+			diagonal = obj_info[cam_idx][obj_id].diagonal;
+			move_size_total = 0.0;
+			count = 0;
+
+			// Process the motion vectors
+			for (int row = row_start; row < (row_start + row_num) && row < rows; ++row)
+			{
+				for (int col = col_start; col < (col_start + col_num) && col < cols; ++col)
+				{
+					int index = row * cols + col;
+					int max_index = rows * cols;
+
+					if (index < 0 || index >= max_index)
+					{
+						glog_error("[process_opt_flow] Index still out of bounds! index=%d, max=%d\n",
+								   index, max_index);
+						continue;
+					}
+
+					NvOFFlowVector flow_vector = flow_vectors[index];
+					move_size = calculate_sqrt(flow_vector.flowx, flow_vector.flowy);
+					move_size_total += move_size;
+					count++;
+				}
+			}
+
+			// glog_trace("[process_opt_flow] Processed %d flow vectors\n", count);
+
+			if (count > 0)
+			{
+				move_size_avg = move_size_total / (double)count;
+				obj_info[cam_idx][obj_id].opt_flow_check_count++;
+				obj_info[cam_idx][obj_id].move_size_avg = update_average(
+					obj_info[cam_idx][obj_id].move_size_avg,
+					obj_info[cam_idx][obj_id].opt_flow_check_count,
+					move_size_avg);
+			}
+
+			if (cam_sec_interval)
+			{
+				bbox_move = get_move_distance(cam_idx, obj_id);
+				rect_size_change = get_rect_size_change(cam_idx, obj_id);
+				set_prev_xy(cam_idx, obj_id);
+				set_prev_rect_size(cam_idx, obj_id);
+
+				if (obj_info[cam_idx][obj_id].move_size_avg > 0)
+				{
+					glog_trace("[SEC] [%d][%d].move_size_avg=%.1f,confi=%.2f,diag=%.1f\n",
+							   cam_idx, obj_id,
+							   obj_info[cam_idx][obj_id].move_size_avg,
+							   obj_info[cam_idx][obj_id].confidence,
+							   diagonal);
+				}
+
+				if (bbox_move < THRESHOLD_BBOX_MOVE &&
+					rect_size_change < THRESHOLD_RECT_SIZE_CHANGE &&
+					g_move_speed == 0)
+				{
+					corr_value = get_correction_value(diagonal);
+					if (cam_idx == RGB_CAM)
+					{
+						corr_value += 9;
+					}
+
+					if (obj_info[cam_idx][obj_id].move_size_avg >
+						(g_setting.opt_flow_threshold + corr_value))
+					{
+						obj_info[cam_idx][obj_id].opt_flow_detected_count++;
+						glog_trace("[%d][%d].opt_flow_detected_count ==> %d\n",
+								   cam_idx, obj_id,
+								   obj_info[cam_idx][obj_id].opt_flow_detected_count);
+					}
+				}
+				else
+				{
+					glog_trace("[SEC] bbox_move=%d,rect_size_change=%d,g_move_speed=%d\n",
+							   bbox_move, rect_size_change, g_move_speed);
+				}
+
+				init_opt_flow(cam_idx, obj_id, 0);
+			}
+		}
+	}
+
+	// glog_trace("[process_opt_flow] END\n");
 }
 
 #endif
 
 void set_obj_rect_id(int cam_idx, NvDsObjectMeta *obj_meta, int cam_sec_interval)
 {
-    if (cam_idx < 0 || cam_idx >= NUM_CAMS) {
-        glog_error("[set_obj_rect_id] Invalid cam_idx: %d (MAX: %d)\n", cam_idx, NUM_CAMS);
-        return;
-    }
+	if (cam_idx < 0 || cam_idx >= NUM_CAMS)
+	{
+		glog_error("[set_obj_rect_id] Invalid cam_idx: %d (MAX: %d)\n", cam_idx, NUM_CAMS);
+		return;
+	}
 
-    if (obj_meta->object_id < 0) {
-        glog_error("[set_obj_rect_id] Negative object_id: %d\n", obj_meta->object_id);
-        return;
-    }
+	if (obj_meta->object_id < 0)
+	{
+		glog_error("[set_obj_rect_id] Negative object_id: %d\n", obj_meta->object_id);
+		return;
+	}
 
-    int obj_idx = obj_meta->object_id % NUM_OBJS;
-    
-    // 현재 프레임의 bounding box 정보 직접 사용
-    int x = (int)obj_meta->rect_params.left;
-    int y = (int)obj_meta->rect_params.top;
-    int width = (int)obj_meta->rect_params.width;
-    int height = (int)obj_meta->rect_params.height;
+	int obj_idx = obj_meta->object_id % NUM_OBJS;
 
-    // 객체 정보 저장
-    obj_info[cam_idx][obj_idx].x = x;
-    obj_info[cam_idx][obj_idx].y = y;
-    obj_info[cam_idx][obj_idx].width = width;
-    obj_info[cam_idx][obj_idx].height = height;
+	// 현재 프레임의 bounding box 정보 직접 사용
+	int x = (int)obj_meta->rect_params.left;
+	int y = (int)obj_meta->rect_params.top;
+	int width = (int)obj_meta->rect_params.width;
+	int height = (int)obj_meta->rect_params.height;
 
-    // center_x, center_y 계산 (버그 수정)
-    obj_info[cam_idx][obj_idx].center_x = x + (width / 2);
-    obj_info[cam_idx][obj_idx].center_y = y + (height / 2);  // ← 수정됨!
+	// 객체 정보 저장
+	obj_info[cam_idx][obj_idx].x = x;
+	obj_info[cam_idx][obj_idx].y = y;
+	obj_info[cam_idx][obj_idx].width = width;
+	obj_info[cam_idx][obj_idx].height = height;
 
-    // 대각선 길이 계산 (피타고라스 정리)
-    obj_info[cam_idx][obj_idx].diagonal = calculate_sqrt((double)width, (double)height);
+	// center_x, center_y 계산 (버그 수정)
+	obj_info[cam_idx][obj_idx].center_x = x + (width / 2);
+	obj_info[cam_idx][obj_idx].center_y = y + (height / 2); // ← 수정됨!
 
-    // 클래스 정보 저장
-    obj_info[cam_idx][obj_idx].class_id = (int)obj_meta->class_id;
-    obj_info[cam_idx][obj_idx].confidence = (float)obj_meta->confidence;
+	// 대각선 길이 계산 (피타고라스 정리)
+	obj_info[cam_idx][obj_idx].diagonal = calculate_sqrt((double)width, (double)height);
 
-    // 디버깅을 위한 로그 (필요시 활성화)
-    // #ifdef DEBUG_OBJ_RECT
-    // if (cam_sec_interval) {
-    //     glog_trace("[set_obj_rect_id] cam=%d, obj=%d, bbox=(%d,%d,%d,%d), "
-    //                "center=(%d,%d), diag=%.2f, class=%d, conf=%.2f\n",
-    //                cam_idx, obj_idx, x, y, width, height,
-    //                obj_info[cam_idx][obj_idx].center_x,
-    //                obj_info[cam_idx][obj_idx].center_y,
-    //                obj_info[cam_idx][obj_idx].diagonal,
-    //                obj_info[cam_idx][obj_idx].class_id,
-    //                obj_info[cam_idx][obj_idx].confidence);
-    // }
-    // #endif
+	// 클래스 정보 저장
+	obj_info[cam_idx][obj_idx].class_id = (int)obj_meta->class_id;
+	obj_info[cam_idx][obj_idx].confidence = (float)obj_meta->confidence;
+
+	// 디버깅을 위한 로그 (필요시 활성화)
+	// #ifdef DEBUG_OBJ_RECT
+	// if (cam_sec_interval) {
+	//     glog_trace("[set_obj_rect_id] cam=%d, obj=%d, bbox=(%d,%d,%d,%d), "
+	//                "center=(%d,%d), diag=%.2f, class=%d, conf=%.2f\n",
+	//                cam_idx, obj_idx, x, y, width, height,
+	//                obj_info[cam_idx][obj_idx].center_x,
+	//                obj_info[cam_idx][obj_idx].center_y,
+	//                obj_info[cam_idx][obj_idx].diagonal,
+	//                obj_info[cam_idx][obj_idx].class_id,
+	//                obj_info[cam_idx][obj_idx].confidence);
+	// }
+	// #endif
 }
 
 #if THERMAL_TEMP_INCLUDE
 void get_pixel_color(NvBufSurface *surface, guint batch_idx, guint x, guint y, unsigned char *r, unsigned char *g, unsigned char *b, unsigned char *a)
 {
-	if (!surface) {
-        glog_error("[get_pixel_color] Surface is NULL\n");
-        return;
-    }
+	if (!surface)
+	{
+		glog_error("[get_pixel_color] Surface is NULL\n");
+		return;
+	}
 
-    if (batch_idx >= surface->numFilled) {
-        glog_error("[get_pixel_color] batch_idx %u exceeds numFilled %u\n", 
-                   batch_idx, surface->numFilled);
-        return;
-    }
+	if (batch_idx >= surface->numFilled)
+	{
+		glog_error("[get_pixel_color] batch_idx %u exceeds numFilled %u\n",
+				   batch_idx, surface->numFilled);
+		return;
+	}
 
-    if (!surface->surfaceList) {
-        glog_error("[get_pixel_color] surfaceList is NULL\n");
-        return;
-    }
+	if (!surface->surfaceList)
+	{
+		glog_error("[get_pixel_color] surfaceList is NULL\n");
+		return;
+	}
 
-    NvBufSurfaceParams *params = &surface->surfaceList[batch_idx];
-    
-    if (!params->dataPtr) {
-        glog_error("[get_pixel_color] dataPtr is NULL for batch_idx %u\n", batch_idx);
-        return;
-    }
+	NvBufSurfaceParams *params = &surface->surfaceList[batch_idx];
+
+	if (!params->dataPtr)
+	{
+		glog_error("[get_pixel_color] dataPtr is NULL for batch_idx %u\n", batch_idx);
+		return;
+	}
 
 	// Get the width, height, and color format of the surface
 	int width = params->width;
@@ -867,224 +905,253 @@ float map_rgba_to_temp(unsigned char r, unsigned char g, unsigned char b)
 
 float map_rgba_to_temp_livestock(unsigned char r, unsigned char g, unsigned char b)
 {
-    float brightness = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
-    
-    // 베지어 곡선 제어점
-    // P0(0, 20), P1(0.3, 30), P2(0.7, 38), P3(1, 42)
-    float t = brightness;
-    float t2 = t * t;
-    float t3 = t2 * t;
-    float mt = 1.0f - t;
-    float mt2 = mt * mt;
-    float mt3 = mt2 * mt;
-    
-    // 3차 베지어 곡선
-    float temp = 20.0f * mt3 +
-                 3.0f * 30.0f * mt2 * t +
-                 3.0f * 38.0f * mt * t2 +
-                 42.0f * t3;
-    
-    return temp;
+	float brightness = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
+
+	// 베지어 곡선 제어점
+	// P0(0, 20), P1(0.3, 30), P2(0.7, 38), P3(1, 42)
+	float t = brightness;
+	float t2 = t * t;
+	float t3 = t2 * t;
+	float mt = 1.0f - t;
+	float mt2 = mt * mt;
+	float mt3 = mt2 * mt;
+
+	// 3차 베지어 곡선
+	float temp = 20.0f * mt3 +
+				 3.0f * 30.0f * mt2 * t +
+				 3.0f * 38.0f * mt * t2 +
+				 42.0f * t3;
+
+	return temp;
 }
 
 // Function to get RGBA color and map it to temp
 float get_pixel_temp(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
 {
-    // 단순히 밝기를 온도 지표로 사용
-    float brightness = (r + g + b) / 3.0f;
-    
-    // 0-100 범위로 정규화 (실제 온도가 아닌 상대값)
-    return brightness * 100.0f / 255.0f;
+	// 단순히 밝기를 온도 지표로 사용
+	float brightness = (r + g + b) / 3.0f;
+
+	// 0-100 범위로 정규화 (실제 온도가 아닌 상대값)
+	return brightness * 100.0f / 255.0f;
 }
 
 // 전체 소들의 온도 통계 계산 (매 프레임)
 void calculate_herd_temperature_stats(HerdTempStats *stats)
 {
-    stats->avg_temp = 0;
-    stats->total_cows = 0;
-    stats->std_dev = 0;
-    
-    float temp_sum = 0;
-    float temps[NUM_OBJS];
-    int count = 0;
-    
-    // 유효한 온도를 가진 소만 포함
-    for (int i = 0; i < NUM_OBJS; i++) {
-        // bbox_temp가 유효한 범위인지 확인
-        if (obj_info[THERMAL_CAM][i].bbox_temp > g_setting.threshold_under_temp && 
-            obj_info[THERMAL_CAM][i].bbox_temp < g_setting.threshold_upper_temp &&
-            obj_info[THERMAL_CAM][i].bbox_temp > 0) {
-            
-            // 추가 필터: 너무 낮은 온도 제외 (예: 25도 미만)
-            if (obj_info[THERMAL_CAM][i].bbox_temp < 25) {
-                continue;
-            }
-            
-            temps[count] = (float)obj_info[THERMAL_CAM][i].bbox_temp;
-            temp_sum += temps[count];
-            count++;
-            
-            // 디버그 로그
-            // glog_debug("Including cow %d with temp %.1f in average\n", 
-            //           i, temps[count-1]);
-        }
-    }
-    
-    if (count == 0) {
-        glog_debug("No valid cows for temperature statistics\n");
-        return;
-    }
-    
-    // 평균 계산
-    stats->avg_temp = temp_sum / count;
-    stats->total_cows = count;
-    
-    // 표준편차 계산
-    float variance = 0;
-    for (int i = 0; i < count; i++) {
-        float diff = temps[i] - stats->avg_temp;
-        variance += diff * diff;
-    }
-    stats->std_dev = sqrt(variance / count);
-    
-    // 통계 로그
-    // glog_debug("Temperature Stats: count=%d, avg=%.1f, std=%.1f, range=[%.1f-%.1f]\n",
-    //            count, stats->avg_temp, stats->std_dev,
-    //            count > 0 ? temps[0] : 0, 
-    //            count > 0 ? temps[count-1] : 0);
+	stats->avg_temp = 0;
+	stats->total_cows = 0;
+	stats->std_dev = 0;
+
+	float temp_sum = 0;
+	float temps[NUM_OBJS];
+	int count = 0;
+
+	// 유효한 온도를 가진 소만 포함
+	for (int i = 0; i < NUM_OBJS; i++)
+	{
+		// bbox_temp가 유효한 범위인지 확인
+		if (obj_info[THERMAL_CAM][i].bbox_temp > g_setting.threshold_under_temp &&
+			obj_info[THERMAL_CAM][i].bbox_temp < g_setting.threshold_upper_temp &&
+			obj_info[THERMAL_CAM][i].bbox_temp > 0)
+		{
+
+			// 추가 필터: 너무 낮은 온도 제외 (예: 25도 미만)
+			if (obj_info[THERMAL_CAM][i].bbox_temp < 25)
+			{
+				continue;
+			}
+
+			temps[count] = (float)obj_info[THERMAL_CAM][i].bbox_temp;
+			temp_sum += temps[count];
+			count++;
+
+			// 디버그 로그
+			// glog_debug("Including cow %d with temp %.1f in average\n",
+			//           i, temps[count-1]);
+		}
+	}
+
+	if (count == 0)
+	{
+		glog_debug("No valid cows for temperature statistics\n");
+		return;
+	}
+
+	// 평균 계산
+	stats->avg_temp = temp_sum / count;
+	stats->total_cows = count;
+
+	// 표준편차 계산
+	float variance = 0;
+	for (int i = 0; i < count; i++)
+	{
+		float diff = temps[i] - stats->avg_temp;
+		variance += diff * diff;
+	}
+	stats->std_dev = sqrt(variance / count);
+
+	// 통계 로그
+	// glog_debug("Temperature Stats: count=%d, avg=%.1f, std=%.1f, range=[%.1f-%.1f]\n",
+	//            count, stats->avg_temp, stats->std_dev,
+	//            count > 0 ? temps[0] : 0,
+	//            count > 0 ? temps[count-1] : 0);
 }
 
 // 개별 소의 발열 여부 판단
 int is_cow_fever(int obj_id, HerdTempStats *herd_stats)
 {
-    if (obj_id < 0 || !herd_stats || herd_stats->total_cows < 2) 
-        return 0;
-    
-    float cow_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
-    float avg_temp = herd_stats->avg_temp;
-    float std_dev = herd_stats->std_dev;
-    
-    // 방법 1: 평균보다 특정 값 이상 높은 경우
-    float temp_threshold = 5.0f;  // 평균보다 5도 이상 높으면 발열
-    if (cow_temp > avg_temp + temp_threshold) {
-        return 1;
-    }
-    
-    // 방법 2: 표준편차 기반 (더 정확함)
-    // 평균 + (2 * 표준편차) 이상이면 발열 (상위 2.5%)
-    if (std_dev > 0 && cow_temp > avg_temp + (2.0f * std_dev)) {
-        return 1;
-    }
-    
-    return 0;
+	if (obj_id < 0 || !herd_stats || herd_stats->total_cows < 2)
+		return 0;
+
+	float cow_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
+	float avg_temp = herd_stats->avg_temp;
+	float std_dev = herd_stats->std_dev;
+
+	// 방법 1: 평균보다 특정 값 이상 높은 경우
+	float temp_threshold = 5.0f; // 평균보다 5도 이상 높으면 발열
+	if (cow_temp > avg_temp + temp_threshold)
+	{
+		return 1;
+	}
+
+	// 방법 2: 표준편차 기반 (더 정확함)
+	// 평균 + (2 * 표준편차) 이상이면 발열 (상위 2.5%)
+	if (std_dev > 0 && cow_temp > avg_temp + (2.0f * std_dev))
+	{
+		return 1;
+	}
+
+	return 0;
 }
 
 int is_cow_in_top_percent(int obj_id, float percent)
 {
-    int cow_count = 0;
-    float my_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
-    int higher_count = 0;
-    
-    // 나보다 온도가 높은 소 개수 세기
-    for (int i = 0; i < NUM_OBJS; i++) {
-        if (obj_info[THERMAL_CAM][i].bbox_temp > 0) {
-            cow_count++;
-            if (obj_info[THERMAL_CAM][i].bbox_temp > my_temp) {
-                higher_count++;
-            }
-        }
-    }
-    
-    if (cow_count == 0) return 0;
-    
-    // 상위 몇 %인지 계산
-    float percentile = (float)higher_count / cow_count * 100.0f;
-    
-    // 상위 percent% 안에 들면 발열
-    return (percentile <= percent);
+	int cow_count = 0;
+	float my_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
+	int higher_count = 0;
+
+	// 나보다 온도가 높은 소 개수 세기
+	for (int i = 0; i < NUM_OBJS; i++)
+	{
+		if (obj_info[THERMAL_CAM][i].bbox_temp > 0)
+		{
+			cow_count++;
+			if (obj_info[THERMAL_CAM][i].bbox_temp > my_temp)
+			{
+				higher_count++;
+			}
+		}
+	}
+
+	if (cow_count == 0)
+		return 0;
+
+	// 상위 몇 %인지 계산
+	float percentile = (float)higher_count / cow_count * 100.0f;
+
+	// 상위 percent% 안에 들면 발열
+	return (percentile <= percent);
 }
 
 void process_fever_detection(int cam_idx)
 {
-    if (cam_idx != THERMAL_CAM || !g_setting.temp_apply) return;
-    
-    static HerdTempStats herd_stats = {0};
-    
-    // 전체 소들의 온도 통계 계산
-    calculate_herd_temperature_stats(&herd_stats);
-    
-    // 유효한 소가 너무 적으면 기본값 사용
-    if (herd_stats.total_cows < 2 || herd_stats.avg_temp < 25.0f) {
-        glog_debug("Invalid stats: cows=%d, avg=%.1f. Using default threshold.\n", 
-                  herd_stats.total_cows, herd_stats.avg_temp);
-        
-        // 절대 온도 기준으로 판단
-        for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++) {
-            if (obj_info[THERMAL_CAM][obj_id].bbox_temp <= 0) continue;
-            
-            // 38도 이상이면 발열로 판단
-            if (obj_info[THERMAL_CAM][obj_id].bbox_temp >= 38.0f) {
-                obj_info[THERMAL_CAM][obj_id].temp_duration++;
-                
-                if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time) {
-                    obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-                    obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
-                    obj_info[THERMAL_CAM][obj_id].notification_flag = 1;
-                    glog_info("FEVER DETECTED (absolute): Cow %d, temp=%.1f\n",
-                             obj_id, (float)obj_info[THERMAL_CAM][obj_id].bbox_temp);
-                }
-            } else {
-                obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-            }
-        }
-        return;
-    }
-    
-    // 정상적인 통계 기반 발열 감지
-    for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++) {
-        if (obj_info[THERMAL_CAM][obj_id].bbox_temp <= g_setting.threshold_under_temp) {
-            obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-            obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
-            continue;
-        }
-        
-        float cow_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
-        
-        // 평균이 정상 범위인 경우에만 상대 비교
-        int is_fever = 0;
-        if (herd_stats.avg_temp >= 30.0f && herd_stats.avg_temp <= 37.0f) {
-            // 평균 + 임계값 방식
-            is_fever = (cow_temp > herd_stats.avg_temp + g_setting.temp_diff_threshold);
-        } else {
-            // 평균이 비정상이면 절대 온도 기준
-            is_fever = (cow_temp >= 38.0f);
-        }
-        
-        if (is_fever) {
-            obj_info[THERMAL_CAM][obj_id].temp_duration++;
-            
-            // glog_debug("Cow %d fever check: temp=%.1f, avg=%.1f, duration=%d/%d\n", 
-            //           obj_id, cow_temp, herd_stats.avg_temp,
-            //           obj_info[THERMAL_CAM][obj_id].temp_duration, 
-            //           g_setting.over_temp_time);
-            
-            if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time) {
-                obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-                
-                if (obj_info[THERMAL_CAM][obj_id].temp_event_time_gap == 0) {
-                    obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
-                    // obj_info[THERMAL_CAM][obj_id].notification_flag = 1;
-                    
-                    // glog_info("FEVER DETECTED: Cow %d, temp=%.1f (avg=%.1f + %.1f)\n",
-                    //          obj_id, cow_temp, herd_stats.avg_temp, 
-                    //          g_setting.temp_diff_threshold);
-                }
-            }
-        } else {
-            obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-            obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
-        }
-    }
+	if (cam_idx != THERMAL_CAM || !g_setting.temp_apply)
+		return;
+
+	static HerdTempStats herd_stats = {0};
+
+	// 전체 소들의 온도 통계 계산
+	calculate_herd_temperature_stats(&herd_stats);
+
+	// 유효한 소가 너무 적으면 기본값 사용
+	if (herd_stats.total_cows < 2 || herd_stats.avg_temp < 25.0f)
+	{
+		glog_debug("Invalid stats: cows=%d, avg=%.1f. Using default threshold.\n",
+				   herd_stats.total_cows, herd_stats.avg_temp);
+
+		// 절대 온도 기준으로 판단
+		for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
+		{
+			if (obj_info[THERMAL_CAM][obj_id].bbox_temp <= 0)
+				continue;
+
+			// 38도 이상이면 발열로 판단
+			if (obj_info[THERMAL_CAM][obj_id].bbox_temp >= 38.0f)
+			{
+				obj_info[THERMAL_CAM][obj_id].temp_duration++;
+
+				if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time)
+				{
+					obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+					obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
+					obj_info[THERMAL_CAM][obj_id].notification_flag = 1;
+					glog_info("FEVER DETECTED (absolute): Cow %d, temp=%.1f\n",
+							  obj_id, (float)obj_info[THERMAL_CAM][obj_id].bbox_temp);
+				}
+			}
+			else
+			{
+				obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+			}
+		}
+		return;
+	}
+
+	// 정상적인 통계 기반 발열 감지
+	for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
+	{
+		if (obj_info[THERMAL_CAM][obj_id].bbox_temp <= g_setting.threshold_under_temp)
+		{
+			obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+			obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
+			continue;
+		}
+
+		float cow_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
+
+		// 평균이 정상 범위인 경우에만 상대 비교
+		int is_fever = 0;
+		if (herd_stats.avg_temp >= 30.0f && herd_stats.avg_temp <= 37.0f)
+		{
+			// 평균 + 임계값 방식
+			is_fever = (cow_temp > herd_stats.avg_temp + g_setting.temp_diff_threshold);
+		}
+		else
+		{
+			// 평균이 비정상이면 절대 온도 기준
+			is_fever = (cow_temp >= 38.0f);
+		}
+
+		if (is_fever)
+		{
+			obj_info[THERMAL_CAM][obj_id].temp_duration++;
+
+			// glog_debug("Cow %d fever check: temp=%.1f, avg=%.1f, duration=%d/%d\n",
+			//           obj_id, cow_temp, herd_stats.avg_temp,
+			//           obj_info[THERMAL_CAM][obj_id].temp_duration,
+			//           g_setting.over_temp_time);
+
+			if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time)
+			{
+				obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+
+				if (obj_info[THERMAL_CAM][obj_id].temp_event_time_gap == 0)
+				{
+					obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
+					// obj_info[THERMAL_CAM][obj_id].notification_flag = 1;
+
+					// glog_info("FEVER DETECTED: Cow %d, temp=%.1f (avg=%.1f + %.1f)\n",
+					//          obj_id, cow_temp, herd_stats.avg_temp,
+					//          g_setting.temp_diff_threshold);
+				}
+			}
+		}
+		else
+		{
+			obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
+			obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
+		}
+	}
 }
 
 void get_bbox_temp(GstBuffer *buf, int obj_id)
@@ -1098,30 +1165,31 @@ void get_bbox_temp(GstBuffer *buf, int obj_id)
 	float pixel_temp = 0;
 	unsigned char r = 0, g = 0, b = 0, a = 0;
 
-	if (obj_id < 0) {
-        glog_error("[get_bbox_temp] Invalid obj_id: %d\n", obj_id);
-        return;
-    }
+	if (obj_id < 0)
+	{
+		glog_error("[get_bbox_temp] Invalid obj_id: %d\n", obj_id);
+		return;
+	}
 
-    NvBufSurface *surface = NULL;
-    GstMapInfo map_info;
+	NvBufSurface *surface = NULL;
+	GstMapInfo map_info;
 
-    if (!gst_buffer_map(buf, &map_info, GST_MAP_READ))
-    {
-        glog_error("[get_bbox_temp] Failed to map buffer for obj_id: %d\n", obj_id);
-        // ❌ unmap 제거
-        return;
-    }
+	if (!gst_buffer_map(buf, &map_info, GST_MAP_READ))
+	{
+		glog_error("[get_bbox_temp] Failed to map buffer for obj_id: %d\n", obj_id);
+		// ❌ unmap 제거
+		return;
+	}
 
-    surface = (NvBufSurface *)map_info.data;
-    if (surface == NULL)
-    {
-        glog_error("[get_bbox_temp] Surface is NULL for obj_id: %d\n", obj_id);
-        gst_buffer_unmap(buf, &map_info);
-        return;
-    }
+	surface = (NvBufSurface *)map_info.data;
+	if (surface == NULL)
+	{
+		glog_error("[get_bbox_temp] Surface is NULL for obj_id: %d\n", obj_id);
+		gst_buffer_unmap(buf, &map_info);
+		return;
+	}
 
-    //glog_trace("[get_bbox_temp] Successfully mapped buffer for obj_id: %d\n", obj_id);
+	// glog_trace("[get_bbox_temp] Successfully mapped buffer for obj_id: %d\n", obj_id);
 
 	x_start = (obj_info[THERMAL_CAM][obj_id].x);
 	y_start = (obj_info[THERMAL_CAM][obj_id].y);
@@ -1308,7 +1376,7 @@ void add_correction()
 
 void set_color(NvDsObjectMeta *obj_meta, int color, int set_text_blank)
 {
-	//glog_trace("set_color: obj_id=%ld, color=%d, set_text_blank=%d\n", obj_meta->object_id, color, set_text_blank);
+	// glog_trace("set_color: obj_id=%ld, color=%d, set_text_blank=%d\n", obj_meta->object_id, color, set_text_blank);
 	switch (color)
 	{
 	case GREEN_COLOR:
@@ -1353,120 +1421,133 @@ void set_color(NvDsObjectMeta *obj_meta, int color, int set_text_blank)
 // 색상 설정도 단순화
 void set_temp_bbox_color(NvDsObjectMeta *obj_meta)
 {
-    int obj_id = obj_meta->object_id;
-    if (obj_id < 0) return;
-    
-    // 온도 기반 색상 설정
-    if (obj_info[THERMAL_CAM][obj_id].class_id == CLASS_OVER_TEMP) {
-        // 발열: 빨간색
-        set_color(obj_meta, RED_COLOR, 0);
-    } else if (obj_info[THERMAL_CAM][obj_id].temp_duration > 0) {
-        // 발열 진행 중: 노란색
-        set_color(obj_meta, YELLO_COLOR, 0);
-    } else {
-        // 정상: 녹색
-        set_color(obj_meta, GREEN_COLOR, 0);
-    }
+	int obj_id = obj_meta->object_id;
+	if (obj_id < 0)
+		return;
+
+	// 온도 기반 색상 설정
+	if (obj_info[THERMAL_CAM][obj_id].class_id == CLASS_OVER_TEMP)
+	{
+		// 발열: 빨간색
+		set_color(obj_meta, RED_COLOR, 0);
+	}
+	else if (obj_info[THERMAL_CAM][obj_id].temp_duration > 0)
+	{
+		// 발열 진행 중: 노란색
+		set_color(obj_meta, YELLO_COLOR, 0);
+	}
+	else
+	{
+		// 정상: 녹색
+		set_color(obj_meta, GREEN_COLOR, 0);
+	}
 }
 
 // nvds_process.c에 추가할 함수
 static void add_clock_overlay(NvDsFrameMeta *frame_meta, NvDsBatchMeta *batch_meta, int cam_idx)
 {
-    // 시계용 DisplayMeta 생성
-    NvDsDisplayMeta *clock_meta = nvds_acquire_display_meta_from_pool(batch_meta);
-    if (!clock_meta) {
-        return;
-    }
-    
-    // 현재 시간 가져오기
-    time_t rawtime;
-    struct tm *timeinfo;
-    char time_str[64];
-    
-    time(&rawtime);
-    timeinfo = localtime(&rawtime);
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", timeinfo);
-    
-    // 프레임 해상도
-    int frame_width = frame_meta->source_frame_width;
-    int frame_height = frame_meta->source_frame_height;
-    
-    if (frame_width == 0 || frame_height == 0) {
-        if (cam_idx == THERMAL_CAM) {
-            frame_width = 384;
-            frame_height = 288;
-        } else {
-            frame_width = 1920;
-            frame_height = 1080;
-        }
-    }
-    
-    // 시계 위치 및 크기 설정
-    int clock_x, clock_y, clock_font_size;
-    
-    if (cam_idx == THERMAL_CAM) {
-        clock_x = 5;
-        clock_y = 5;
-        clock_font_size = 12;
-    } else {
-        clock_x = 10;
-        clock_y = 15;
-        clock_font_size = 36;
-    }
-    
-    // 8방향 외곽선 오프셋
-    int offsets[][2] = {
-        {-1, -1}, {0, -1}, {1, -1},
-        {-1,  0},          {1,  0},
-        {-1,  1}, {0,  1}, {1,  1}
-    };
-    
-    // 배경 사각형 추가
-    // clock_meta->num_rects = 1;
-    // NvOSD_RectParams *clock_bg = &clock_meta->rect_params[0];
-    // clock_bg->left = clock_x - 10;
-    // clock_bg->top = clock_y - 5;
-    // clock_bg->width = strlen(time_str) * (clock_font_size * 0.6) + 20;
-    // clock_bg->height = clock_font_size + 10;
-    // clock_bg->has_bg_color = 1;
-    // clock_bg->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 0.4};
-    // clock_bg->border_width = 0;
-    
-    // 텍스트 설정 (8개 외곽선 + 1개 중앙)
-    clock_meta->num_labels = 9;
-    
-    // 검은색 외곽선 (8방향)
-    for (int i = 0; i < 8; i++) {
-        NvOSD_TextParams *outline = &clock_meta->text_params[i];
-        outline->display_text = g_strdup(time_str);
-        outline->x_offset = clock_x + offsets[i][0];
-        outline->y_offset = clock_y + offsets[i][1];
-        outline->font_params.font_name = "Ubuntu";
-        outline->font_params.font_size = clock_font_size;
-        outline->font_params.font_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 1.0};
-        outline->set_bg_clr = 0;
-    }
-    
-    // 흰색 중앙 텍스트
-    NvOSD_TextParams *center = &clock_meta->text_params[8];
-    center->display_text = g_strdup(time_str);
-    center->x_offset = clock_x;
-    center->y_offset = clock_y;
-    center->font_params.font_name = "Ubuntu";
-    center->font_params.font_size = clock_font_size;
-    center->font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0};
-    center->set_bg_clr = 0;
-    
-    nvds_add_display_meta_to_frame(frame_meta, clock_meta);
+	// 시계용 DisplayMeta 생성
+	NvDsDisplayMeta *clock_meta = nvds_acquire_display_meta_from_pool(batch_meta);
+	if (!clock_meta)
+	{
+		return;
+	}
+
+	// 현재 시간 가져오기
+	time_t rawtime;
+	struct tm *timeinfo;
+	char time_str[64];
+
+	time(&rawtime);
+	timeinfo = localtime(&rawtime);
+	strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", timeinfo);
+
+	// 프레임 해상도
+	int frame_width = frame_meta->source_frame_width;
+	int frame_height = frame_meta->source_frame_height;
+
+	if (frame_width == 0 || frame_height == 0)
+	{
+		if (cam_idx == THERMAL_CAM)
+		{
+			frame_width = 384;
+			frame_height = 288;
+		}
+		else
+		{
+			frame_width = 1920;
+			frame_height = 1080;
+		}
+	}
+
+	// 시계 위치 및 크기 설정
+	int clock_x, clock_y, clock_font_size;
+
+	if (cam_idx == THERMAL_CAM)
+	{
+		clock_x = 5;
+		clock_y = 5;
+		clock_font_size = 12;
+	}
+	else
+	{
+		clock_x = 10;
+		clock_y = 15;
+		clock_font_size = 36;
+	}
+
+	// 8방향 외곽선 오프셋
+	int offsets[][2] = {
+		{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}};
+
+	// 배경 사각형 추가
+	// clock_meta->num_rects = 1;
+	// NvOSD_RectParams *clock_bg = &clock_meta->rect_params[0];
+	// clock_bg->left = clock_x - 10;
+	// clock_bg->top = clock_y - 5;
+	// clock_bg->width = strlen(time_str) * (clock_font_size * 0.6) + 20;
+	// clock_bg->height = clock_font_size + 10;
+	// clock_bg->has_bg_color = 1;
+	// clock_bg->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 0.4};
+	// clock_bg->border_width = 0;
+
+	// 텍스트 설정 (8개 외곽선 + 1개 중앙)
+	clock_meta->num_labels = 9;
+
+	// 검은색 외곽선 (8방향)
+	for (int i = 0; i < 8; i++)
+	{
+		NvOSD_TextParams *outline = &clock_meta->text_params[i];
+		outline->display_text = g_strdup(time_str);
+		outline->x_offset = clock_x + offsets[i][0];
+		outline->y_offset = clock_y + offsets[i][1];
+		outline->font_params.font_name = "Ubuntu";
+		outline->font_params.font_size = clock_font_size;
+		outline->font_params.font_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 1.0};
+		outline->set_bg_clr = 0;
+	}
+
+	// 흰색 중앙 텍스트
+	NvOSD_TextParams *center = &clock_meta->text_params[8];
+	center->display_text = g_strdup(time_str);
+	center->x_offset = clock_x;
+	center->y_offset = clock_y;
+	center->font_params.font_name = "Ubuntu";
+	center->font_params.font_size = clock_font_size;
+	center->font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0};
+	center->set_bg_clr = 0;
+
+	nvds_add_display_meta_to_frame(frame_meta, clock_meta);
 }
 
 /* osd_sink_pad_buffer_probe  will extract metadata received on OSD sink pad
  * and update params for drawing rectangle, object information etc. */
 static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer u_data) // LJH, this function is called per frame
 {
-	if (!g_setting.analysis_status) {
-        return GST_PAD_PROBE_OK;
-    }
+	if (!g_setting.analysis_status)
+	{
+		return GST_PAD_PROBE_OK;
+	}
 
 	GstBuffer *buf = (GstBuffer *)info->data;
 	NvDsObjectMeta *obj_meta = NULL;
@@ -1520,6 +1601,29 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 			obj_meta = (NvDsObjectMeta *)(l_obj->data);
 			obj_meta->rect_params.border_width = 1;
 			obj_meta->text_params.set_bg_clr = 0;
+
+			if (g_cow_tracking_state.is_tracking && 
+                obj_meta->object_id == g_cow_tracking_state.target_id) {
+                
+                // 클래스가 정상으로 변경되었는지 확인
+                if (obj_meta->class_id == CLASS_NORMAL_COW || 
+                    obj_meta->class_id == CLASS_NORMAL_COW_SITTING) {
+                    glog_info("Tracked object returned to normal state\n");
+                    stop_cow_tracking();
+                } else if (obj_meta->class_id == g_cow_tracking_state.target_class) {
+                    // 최신 위치 정보 저장
+                    g_cow_tracking_state.last_x = obj_meta->rect_params.left;
+                    g_cow_tracking_state.last_y = obj_meta->rect_params.top;
+                    g_cow_tracking_state.last_width = obj_meta->rect_params.width;
+                    g_cow_tracking_state.last_height = obj_meta->rect_params.height;
+                    g_cow_tracking_state.last_update_time = time(NULL);
+                    g_cow_tracking_state.lost_count = 0;  // 리셋
+                    
+                    glog_debug("Updated tracking position: (%d,%d) %dx%d\n",
+                              g_cow_tracking_state.last_x, g_cow_tracking_state.last_y,
+                              g_cow_tracking_state.last_width, g_cow_tracking_state.last_height);
+                }
+            }
 
 			if (cam_idx == THERMAL_CAM)
 			{
@@ -1623,7 +1727,7 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 												  obj_info[cam_idx][obj_meta->object_id].diagonal > big_obj_diag[cam_idx]))
 			{ // if bounding box is too small or too big don't display bounding box
 				set_color(obj_meta, NO_BBOX, 0);
-				//glog_trace("small||big [%d][%d].diagonal=%f\n", cam_idx, obj_meta->object_id, obj_info[cam_idx][obj_meta->object_id].diagonal);
+				// glog_trace("small||big [%d][%d].diagonal=%f\n", cam_idx, obj_meta->object_id, obj_info[cam_idx][obj_meta->object_id].diagonal);
 			}
 			remove_newline_text(obj_meta);
 			// glog_trace("g_move_speed=%d id=%d text=%s\n", g_move_speed, obj_meta->object_id, obj_meta->text_params.display_text);     //LJH, for test
@@ -1651,8 +1755,8 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 					{
 						// get_temp_avg(); // get average temperature for objects in the screen
 						// do_temp_display = is_temp_duration(); // if over temp state is being counted for notification
-						process_fever_detection(cam_idx);  // 새 함수로 교체
-        				do_temp_display = is_temp_duration();
+						process_fever_detection(cam_idx); // 새 함수로 교체
+						do_temp_display = is_temp_duration();
 					}
 				}
 #endif
@@ -1660,25 +1764,27 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 #if OPTICAL_FLOW_INCLUDE
 			start_obj_id = 0;
 			int iteration_count = 0;
-			
+
 			while ((obj_id = get_opt_flow_object(cam_idx, start_obj_id)) != -1)
 			{
-				if (iteration_count++ > MAX_OPT_FLOW_ITERATIONS) {
+				if (iteration_count++ > MAX_OPT_FLOW_ITERATIONS)
+				{
 					glog_error("[osd_sink_pad_buffer_probe] Possible infinite loop detected! "
-							"cam_idx=%d, start_obj_id=%d, obj_id=%d\n", 
-							cam_idx, start_obj_id, obj_id);
+							   "cam_idx=%d, start_obj_id=%d, obj_id=%d\n",
+							   cam_idx, start_obj_id, obj_id);
 					break;
 				}
-				
+
 				glog_trace("[osd_sink_pad_buffer_probe] Processing opt flow: "
-						"iteration=%d, cam_idx=%d, obj_id=%d\n", 
-						iteration_count, cam_idx, obj_id);
-				
+						   "iteration=%d, cam_idx=%d, obj_id=%d\n",
+						   iteration_count, cam_idx, obj_id);
+
 				process_opt_flow(frame_meta, cam_idx, obj_id, sec_interval[cam_idx]);
 				start_obj_id = (obj_id + 1) % NUM_OBJS;
 			}
-			
-			if (iteration_count > 100) {
+
+			if (iteration_count > 100)
+			{
 				glog_trace("[osd_sink_pad_buffer_probe] High iteration count: %d\n", iteration_count);
 			}
 #endif
@@ -1695,242 +1801,282 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 	return GST_PAD_PROBE_OK;
 }
 
-void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta, 
-                      NvDsBatchMeta *batch_meta, int cam_idx, int temp_display)
+void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta,
+					  NvDsBatchMeta *batch_meta, int cam_idx, int temp_display)
 {
-    // 박스가 숨겨져 있으면 라벨도 표시 안 함
-    if (obj_meta->rect_params.border_color.alpha == 0) {
-        return;
-    }
-    
-    // DisplayMeta 할당
-    NvDsDisplayMeta *display_meta = nvds_acquire_display_meta_from_pool(batch_meta);
-    if (!display_meta) {
-        glog_error("Failed to acquire display meta\n");
-        return;
-    }
-    
-    // 프레임 해상도 가져오기
-    int frame_width = frame_meta->source_frame_width;
-    int frame_height = frame_meta->source_frame_height;
-    
-    // 해상도가 0인 경우 기본값 사용
-    if (frame_width == 0 || frame_height == 0) {
-        // 카메라별 기본 해상도
-        if (cam_idx == THERMAL_CAM) {
-            frame_width = 384;
-            frame_height = 288;
-        } else {
-            frame_width = 1920;
-            frame_height = 1080;
-        }
-    }
-    
-    // 라벨 텍스트 생성 - 이벤트 우선순위로 결정
-    char label_text[256];
-    
-    // 1. 먼저 이벤트 발생 여부 확인 (Heat, Flip 등)
-    if (obj_meta->class_id == CLASS_HEAT_COW || 
-        obj_meta->class_id == CLASS_FLIP_COW || 
-        obj_meta->class_id == CLASS_LABOR_SIGN_COW) {
-        // 이벤트 발생 시에는 obj_label을 표시
-        sprintf(label_text, "%s %.0f%%", 
-                obj_meta->obj_label, 
-                obj_meta->confidence * 100);
-    }
-    // 2. 열화상 카메라이고 이벤트가 없는 경우 온도 표시
-    else if (cam_idx == THERMAL_CAM && 
-             (g_setting.display_temp || temp_display) &&
-             obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp > 0) {
-        sprintf(label_text, "[%d°C]", 
-                obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp);
-    }
-    // 3. 기본 라벨 표시
-    else {
-        sprintf(label_text, "%s %.0f%%", 
-                obj_meta->obj_label, 
-                obj_meta->confidence * 100);
-    }
-    
-    // 해상도 기반 폰트 크기 계산
-    int base_font_size;
-    float scale_factor;
-    
-    if (cam_idx == THERMAL_CAM) {
-        // 열화상은 작은 해상도이므로 다른 비율 적용
-        base_font_size = 8;
-        scale_factor = frame_height / 288.0;
-    } else {
-        base_font_size = 12;
-        scale_factor = frame_height / 1080.0;
-    }
-    
-    int font_size = (int)(base_font_size * scale_factor);
-    font_size = MAX(8, MIN(font_size, 20));  // 8~20 범위로 제한
-    
-    // 텍스트 크기 계산 개선
-    // 폰트 크기에 기반한 문자 폭 계산
-    float char_width = font_size * 0.55;  // 폰트 크기의 55%
-    
-    // 텍스트 길이 계산 (멀티바이트 문자 고려)
-    int display_len = 0;
-    for (int i = 0; label_text[i] != '\0'; i++) {
-        if ((unsigned char)label_text[i] < 128) {
-            display_len++;  // ASCII 문자
-        } else if (label_text[i] == '[' || label_text[i] == ']') {
-            display_len++;  // 대괄호
-        }
-        // °와 C는 별도로 카운트 (°는 멀티바이트)
-    }
-    
-    // 온도 표시의 경우 특별 처리
-    if (cam_idx == THERMAL_CAM && strstr(label_text, "°C")) {
-        display_len = strlen(label_text) - 2 + 1;  // °C를 1문자로 계산
-    }
-    
-    // 패딩 계산
-    int padding = (int)(font_size * 0.8);  // 폰트 크기에 비례
-    int text_width = (int)(display_len * char_width) + padding * 2;
-    int text_height = (int)(font_size * 1.6);  // 폰트의 1.6배
-    
-    // 최소 크기 보장
-    text_width = MAX(text_width, 40);
-    text_height = MAX(text_height, 16);
-    
-    // 1. 라벨 배경 사각형 설정
-    display_meta->num_rects = 1;
+	// 박스가 숨겨져 있으면 라벨도 표시 안 함
+	if (obj_meta->rect_params.border_color.alpha == 0)
+	{
+		return;
+	}
+
+	// DisplayMeta 할당
+	NvDsDisplayMeta *display_meta = nvds_acquire_display_meta_from_pool(batch_meta);
+	if (!display_meta)
+	{
+		glog_error("Failed to acquire display meta\n");
+		return;
+	}
+
+	// 프레임 해상도 가져오기
+	int frame_width = frame_meta->source_frame_width;
+	int frame_height = frame_meta->source_frame_height;
+
+	// 해상도가 0인 경우 기본값 사용
+	if (frame_width == 0 || frame_height == 0)
+	{
+		// 카메라별 기본 해상도
+		if (cam_idx == THERMAL_CAM)
+		{
+			frame_width = 384;
+			frame_height = 288;
+		}
+		else
+		{
+			frame_width = 1920;
+			frame_height = 1080;
+		}
+	}
+
+	// 라벨 텍스트 생성 - 이벤트 우선순위로 결정
+	char label_text[256];
+
+	// 1. 먼저 이벤트 발생 여부 확인 (Heat, Flip 등)
+	if (obj_meta->class_id == CLASS_HEAT_COW ||
+		obj_meta->class_id == CLASS_FLIP_COW ||
+		obj_meta->class_id == CLASS_LABOR_SIGN_COW)
+	{
+		// 이벤트 발생 시에는 obj_label을 표시
+		sprintf(label_text, "%s %.0f%%",
+				obj_meta->obj_label,
+				obj_meta->confidence * 100);
+	}
+	// 2. 열화상 카메라이고 이벤트가 없는 경우 온도 표시
+	else if (cam_idx == THERMAL_CAM &&
+			 (g_setting.display_temp || temp_display) &&
+			 obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp > 0)
+	{
+		sprintf(label_text, "[%d°C]",
+				obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp);
+	}
+	// 3. 기본 라벨 표시
+	else
+	{
+		sprintf(label_text, "%s %.0f%%",
+				obj_meta->obj_label,
+				obj_meta->confidence * 100);
+	}
+
+	// 해상도 기반 폰트 크기 계산
+	int base_font_size;
+	float scale_factor;
+
+	if (cam_idx == THERMAL_CAM)
+	{
+		// 열화상은 작은 해상도이므로 다른 비율 적용
+		base_font_size = 8;
+		scale_factor = frame_height / 288.0;
+	}
+	else
+	{
+		base_font_size = 12;
+		scale_factor = frame_height / 1080.0;
+	}
+
+	int font_size = (int)(base_font_size * scale_factor);
+	font_size = MAX(8, MIN(font_size, 20)); // 8~20 범위로 제한
+
+	// 텍스트 크기 계산 개선
+	// 폰트 크기에 기반한 문자 폭 계산
+	float char_width = font_size * 0.55; // 폰트 크기의 55%
+
+	// 텍스트 길이 계산 (멀티바이트 문자 고려)
+	int display_len = 0;
+	for (int i = 0; label_text[i] != '\0'; i++)
+	{
+		if ((unsigned char)label_text[i] < 128)
+		{
+			display_len++; // ASCII 문자
+		}
+		else if (label_text[i] == '[' || label_text[i] == ']')
+		{
+			display_len++; // 대괄호
+		}
+		// °와 C는 별도로 카운트 (°는 멀티바이트)
+	}
+
+	// 온도 표시의 경우 특별 처리
+	if (cam_idx == THERMAL_CAM && strstr(label_text, "°C"))
+	{
+		display_len = strlen(label_text) - 2 + 1; // °C를 1문자로 계산
+	}
+
+	// 패딩 계산
+	int padding = (int)(font_size * 0.8); // 폰트 크기에 비례
+	int text_width = (int)(display_len * char_width) + padding * 2;
+	int text_height = (int)(font_size * 1.6); // 폰트의 1.6배
+
+	// 최소 크기 보장
+	text_width = MAX(text_width, 40);
+	text_height = MAX(text_height, 16);
+
+	// 1. 라벨 배경 사각형 설정
+	display_meta->num_rects = 1;
 	NvOSD_RectParams *bg_rect = &display_meta->rect_params[0];
 
 	// 위치 설정 (바운딩 박스 왼쪽 위)
-	bg_rect->left = obj_meta->rect_params.left;  // 왼쪽 정렬
+	bg_rect->left = obj_meta->rect_params.left; // 왼쪽 정렬
 	bg_rect->top = obj_meta->rect_params.top - text_height - 2;
 	bg_rect->width = text_width;
 	bg_rect->height = text_height;
-    
-    // 배경 활성화
-    bg_rect->has_bg_color = 1;
-    bg_rect->border_width = 0;
-    
-    // 바운딩 박스 색상에 따라 라벨 배경색 설정
-    NvOSD_ColorParams box_color = obj_meta->rect_params.border_color;
-    
-    if (box_color.red > 0.5 && box_color.green < 0.5 && box_color.blue < 0.5) {
-        bg_rect->bg_color = (NvOSD_ColorParams){0.7, 0.0, 0.0, 0.8};
-    } else if (box_color.green > 0.5 && box_color.red < 0.5 && box_color.blue < 0.5) {
-        bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.5, 0.0, 0.8};
-    } else if (box_color.blue > 0.5 && box_color.red < 0.5 && box_color.green < 0.5) {
-        bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.7, 0.8};
-    } else if (box_color.red > 0.5 && box_color.green > 0.5) {
-        bg_rect->bg_color = (NvOSD_ColorParams){0.7, 0.7, 0.0, 0.8};
-    } else {
-        bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 0.8};
-    }
-    
-    // 2. 라벨 텍스트 설정
-    display_meta->num_labels = 1;
-    NvOSD_TextParams *text_params = &display_meta->text_params[0];
-    
-    text_params->display_text = g_strdup(label_text);
-    
-    // 텍스트 위치를 배경 중앙에 맞춤
-    text_params->x_offset = bg_rect->left;
-    text_params->y_offset = bg_rect->top;
-    
-    // 폰트 설정
-    text_params->font_params.font_name = "Ubuntu";
-    text_params->font_params.font_size = font_size;
-    text_params->font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0};
-    
-    // 텍스트 배경 비활성화
-    text_params->set_bg_clr = 0;
-    
-    // 3. 화면 밖으로 나가지 않도록 조정
-    if (bg_rect->top < 0) {
-        bg_rect->top = obj_meta->rect_params.top + obj_meta->rect_params.height + 2;
-        text_params->y_offset = bg_rect->top + (text_height - font_size) / 2;
-    }
-    
-    // 좌우 경계 체크
-    if (bg_rect->left < 0) {
-        bg_rect->left = 0;
-        text_params->x_offset = bg_rect->left + padding;
-    } else if (bg_rect->left + bg_rect->width > frame_width) {
-        bg_rect->left = frame_width - bg_rect->width;
-        text_params->x_offset = bg_rect->left + padding;
-    }
-    
-    // 기존 텍스트 숨기기
-    obj_meta->text_params.display_text[0] = 0;
-    
-    // DisplayMeta를 프레임에 추가
-    nvds_add_display_meta_to_frame(frame_meta, display_meta);
+
+	// 배경 활성화
+	bg_rect->has_bg_color = 1;
+	bg_rect->border_width = 0;
+
+	// 바운딩 박스 색상에 따라 라벨 배경색 설정
+	NvOSD_ColorParams box_color = obj_meta->rect_params.border_color;
+
+	if (box_color.red > 0.5 && box_color.green < 0.5 && box_color.blue < 0.5)
+	{
+		bg_rect->bg_color = (NvOSD_ColorParams){0.7, 0.0, 0.0, 0.8};
+	}
+	else if (box_color.green > 0.5 && box_color.red < 0.5 && box_color.blue < 0.5)
+	{
+		bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.5, 0.0, 0.8};
+	}
+	else if (box_color.blue > 0.5 && box_color.red < 0.5 && box_color.green < 0.5)
+	{
+		bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.7, 0.8};
+	}
+	else if (box_color.red > 0.5 && box_color.green > 0.5)
+	{
+		bg_rect->bg_color = (NvOSD_ColorParams){0.7, 0.7, 0.0, 0.8};
+	}
+	else
+	{
+		bg_rect->bg_color = (NvOSD_ColorParams){0.0, 0.0, 0.0, 0.8};
+	}
+
+	// 2. 라벨 텍스트 설정
+	display_meta->num_labels = 1;
+	NvOSD_TextParams *text_params = &display_meta->text_params[0];
+
+	text_params->display_text = g_strdup(label_text);
+
+	// 텍스트 위치를 배경 중앙에 맞춤
+	text_params->x_offset = bg_rect->left;
+	text_params->y_offset = bg_rect->top;
+
+	// 폰트 설정
+	text_params->font_params.font_name = "Ubuntu";
+	text_params->font_params.font_size = font_size;
+	text_params->font_params.font_color = (NvOSD_ColorParams){1.0, 1.0, 1.0, 1.0};
+
+	// 텍스트 배경 비활성화
+	text_params->set_bg_clr = 0;
+
+	// 3. 화면 밖으로 나가지 않도록 조정
+	if (bg_rect->top < 0)
+	{
+		bg_rect->top = obj_meta->rect_params.top + obj_meta->rect_params.height + 2;
+		text_params->y_offset = bg_rect->top + (text_height - font_size) / 2;
+	}
+
+	// 좌우 경계 체크
+	if (bg_rect->left < 0)
+	{
+		bg_rect->left = 0;
+		text_params->x_offset = bg_rect->left + padding;
+	}
+	else if (bg_rect->left + bg_rect->width > frame_width)
+	{
+		bg_rect->left = frame_width - bg_rect->width;
+		text_params->x_offset = bg_rect->left + padding;
+	}
+
+	// 기존 텍스트 숨기기
+	obj_meta->text_params.display_text[0] = 0;
+
+	// DisplayMeta를 프레임에 추가
+	nvds_add_display_meta_to_frame(frame_meta, display_meta);
 }
 
 static GstPadProbeReturn
-h264_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
-    GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-    int camera_id = *(int *)user_data;
-    
-    // 캡스 확인하여 H.264 스트림인지 확인
-    GstCaps *caps = gst_pad_get_current_caps(pad);
-    if (caps) {
+h264_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
+{
+	GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+	int camera_id = *(int *)user_data;
+
+	// 캡스 확인하여 H.264 스트림인지 확인
+	GstCaps *caps = gst_pad_get_current_caps(pad);
+	if (caps)
+	{
 		static gboolean codec_data_saved[NUM_CAMERAS] = {FALSE};
-        if (!codec_data_saved[camera_id]) {
-            save_codec_data(camera_id, caps);
-            codec_data_saved[camera_id] = TRUE;
-        }
-		
-        gchar *caps_str = gst_caps_to_string(caps);
-        
-        // 디버그: 처음 몇 번만 출력
-        static int debug_count = 0;
-        if (debug_count++ < 5) {
-            printf("Camera %d caps: %s\n", camera_id, caps_str);
-        }
-        
-        // H.264 스트림인지 확인
-        if (strstr(caps_str, "video/x-h264")) {
-            // 키프레임 확인
-            gboolean is_keyframe = !GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
-            
-            // 순환 버퍼에 추가
-            add_frame_to_buffer(buffer, is_keyframe, camera_id);
-        }
-        
-        g_free(caps_str);
-        gst_caps_unref(caps);
-    }
-    
-    return GST_PAD_PROBE_OK;
+		if (!codec_data_saved[camera_id])
+		{
+			save_codec_data(camera_id, caps);
+			codec_data_saved[camera_id] = TRUE;
+		}
+
+		gchar *caps_str = gst_caps_to_string(caps);
+
+		// 디버그: 처음 몇 번만 출력
+		static int debug_count = 0;
+		if (debug_count++ < 5)
+		{
+			printf("Camera %d caps: %s\n", camera_id, caps_str);
+		}
+
+		// H.264 스트림인지 확인
+		if (strstr(caps_str, "video/x-h264"))
+		{
+			// 키프레임 확인
+			gboolean is_keyframe = !GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+
+			// 순환 버퍼에 추가
+			add_frame_to_buffer(buffer, is_keyframe, camera_id);
+		}
+
+		g_free(caps_str);
+		gst_caps_unref(caps);
+	}
+
+	return GST_PAD_PROBE_OK;
 }
 
-static void on_event_save_complete(int camera_id, int event_id, const char *filename, const char *http_path, 
-                                  gboolean success, double event_time, void *user_data) {
-    if (success) {
-        glog_info("=== Event Save Complete ===\n");
-        g_print("Camera: %d\n", camera_id);
-        g_print("File: %s\n", filename);
-        g_print("Event time: %.2f\n", event_time);
-        
-        // 여기서 필요한 추가 작업 수행
-        // 예: 데이터베이스에 기록, 알림 전송 등
+static void on_event_save_complete(int camera_id, int event_id, const char *filename, const char *http_path,
+								   gboolean success, double event_time, void *user_data)
+{
+	if (success)
+	{
+		glog_info("=== Event Save Complete ===\n");
+		g_print("Camera: %d\n", camera_id);
+		g_print("File: %s\n", filename);
+		g_print("Event time: %.2f\n", event_time);
+
+		// 여기서 필요한 추가 작업 수행
+		// 예: 데이터베이스에 기록, 알림 전송 등
 		char event_class_id[2] = {0};
 		event_class_id[0] = event_id + '0';
 
 		strcpy(g_curlinfo.video_url, http_path);
-		
+
 		notification_request(g_config.camera_id, event_class_id, &g_curlinfo);
-        
-        // 파일 정보 확인
-        struct stat st;
-        if (stat(filename, &st) == 0) {
-            g_print("File size: %.2f MB\n", st.st_size / (1024.0 * 1024.0));
-        }
-        
-        g_print("========================\n");
-    } else {
-        g_print("Event save failed for camera %d\n", camera_id);
-    }
+
+		// 파일 정보 확인
+		struct stat st;
+		if (stat(filename, &st) == 0)
+		{
+			g_print("File size: %.2f MB\n", st.st_size / (1024.0 * 1024.0));
+		}
+
+		g_print("========================\n");
+	}
+	else
+	{
+		g_print("Event save failed for camera %d\n", camera_id);
+	}
 }
 
 void setup_nv_analysis()
@@ -1975,16 +2121,19 @@ void setup_nv_analysis()
 						  osd_sink_pad_buffer_probe, &g_cam_indices[cam_idx], NULL);
 
 		gchar *h264_element_name = g_strdup_printf("h264parse_%d", cam_idx + 1);
-    	GstElement *h264parse = gst_bin_get_by_name(GST_BIN(g_pipeline), h264_element_name);
+		GstElement *h264parse = gst_bin_get_by_name(GST_BIN(g_pipeline), h264_element_name);
 
-		if (h264parse) {
+		if (h264parse)
+		{
 			// src pad에 프로브 추가 (파싱된 H.264 스트림)
 			GstPad *srcpad = gst_element_get_static_pad(h264parse, "src");
 			gst_pad_add_probe(srcpad, GST_PAD_PROBE_TYPE_BUFFER,
-							h264_buffer_probe, &g_cam_indices[cam_idx], NULL);
+							  h264_buffer_probe, &g_cam_indices[cam_idx], NULL);
 			gst_object_unref(srcpad);
 			g_print("Added probe to camera %d h264parse element\n", cam_idx);
-		} else {
+		}
+		else
+		{
 			g_warning("Could not find h264parse_%d element\n", cam_idx);
 		}
 
@@ -2021,3 +2170,174 @@ int is_event_recording()
 	return g_event_recording;
 }
 
+gboolean track_cow_with_area_move(int x, int y, int width, int height) {
+    if (!is_open_serial()) {
+        glog_error("PTZ serial not open for tracking\n");
+        return FALSE;
+    }
+    
+    // 화면 중앙 기준
+    int center_x = x + width / 2;
+    int center_y = y + height / 2;
+    
+    // 설정값 사용
+    int screen_center_x = 960;  // 1920/2
+    int screen_center_y = 540;  // 1080/2
+    
+    // int diff_x = abs(center_x - screen_center_x);
+    // int diff_y = abs(center_y - screen_center_y);
+    
+    // 동적 속도 계산
+    int speed = 30;
+    // if (diff_x > 500 || diff_y > 300) {
+    //     speed = g_setting.tracking_speed_max > 0 ? g_setting.tracking_speed_max : 50;
+    // } else if (diff_x < 200 && diff_y < 150) {
+    //     speed = g_setting.tracking_speed_min > 0 ? g_setting.tracking_speed_min : 20;
+    // }
+    
+    glog_debug("Tracking move: center(%d,%d) -> (%d,%d), speed=%d\n", 
+              center_x, center_y, screen_center_x, screen_center_y, speed);
+    
+    // Area Move 명령 전송
+    unsigned char data[14];
+    int len = 0;
+    
+    data[len++] = 0x96; // Sync
+    data[len++] = 0x00; // Addr
+    data[len++] = 0x27; // CmdL (0x0127)
+    data[len++] = 0x41; // CmdH (no response)
+    data[len++] = 0x09; // Data Size
+    
+    // 영역 좌표 설정
+    data[len++] = x & 0xFF;
+    data[len++] = (x >> 8) & 0xFF;
+    data[len++] = y & 0xFF;
+    data[len++] = (y >> 8) & 0xFF;
+    data[len++] = (x + width) & 0xFF;
+    data[len++] = ((x + width) >> 8) & 0xFF;
+    data[len++] = (y + height) & 0xFF;
+    data[len++] = ((y + height) >> 8) & 0xFF;
+    data[len++] = speed;
+    
+    data[13] = get_checksum(data, 13);
+    
+    write_serial(data, 14);
+    
+    return TRUE;
+}
+
+// 타이머 콜백 함수
+static gboolean tracking_timer_callback(gpointer user_data) {
+    if (!g_cow_tracking_state.is_tracking) {
+        return G_SOURCE_REMOVE;
+    }
+    
+    time_t current_time = time(NULL);
+    
+    // 최대 트래킹 시간 체크 (5분)
+    if (current_time - g_cow_tracking_state.tracking_start_time > 300) {
+        glog_info("Maximum tracking duration (5min) reached\n");
+        stop_cow_tracking();
+        return G_SOURCE_REMOVE;
+    }
+    
+    // 최근 업데이트가 있었는지 확인
+    if (current_time - g_cow_tracking_state.last_update_time > 2) {
+        g_cow_tracking_state.lost_count++;
+        if (g_cow_tracking_state.lost_count > 15) {  // 1.5초
+            glog_info("Object lost in tracking (no update for %d counts)\n", 
+                     g_cow_tracking_state.lost_count);
+            stop_cow_tracking();
+            return G_SOURCE_REMOVE;
+        }
+    } else {
+        // PTZ 이동 실행
+        if (g_cow_tracking_state.last_width > 0 && g_cow_tracking_state.last_height > 0) {
+            track_cow_with_area_move(
+                g_cow_tracking_state.last_x,
+                g_cow_tracking_state.last_y,
+                g_cow_tracking_state.last_width,
+                g_cow_tracking_state.last_height
+            );
+            g_cow_tracking_state.lost_count = 0;
+        }
+    }
+    
+    return G_SOURCE_CONTINUE;
+}
+
+// 트래킹 시작
+void start_cow_tracking(int obj_id, int class_id, int x, int y, int width, int height) {
+    // 우선순위 체크
+    if (g_cow_tracking_state.is_tracking) {
+        if (class_id == CLASS_LABOR_SIGN_COW && 
+            g_cow_tracking_state.target_class != CLASS_LABOR_SIGN_COW) {
+            glog_info("Higher priority event detected, switching tracking\n");
+            stop_cow_tracking();
+        } else if (g_cow_tracking_state.tracking_priority >= class_id) {
+            return;  // 현재 트래킹이 우선순위가 더 높음
+        }
+    }
+    
+    // Auto PTZ 일시정지
+    if (is_work_auto_ptz()) {
+        pause_auto_ptz();
+        glog_info("Auto PTZ paused for tracking\n");
+    }
+    
+    glog_info("Starting cow tracking: obj_id=%d, class=%d, pos=(%d,%d), size=%dx%d\n", 
+              obj_id, class_id, x, y, width, height);
+    
+    g_cow_tracking_state.is_tracking = TRUE;
+    g_cow_tracking_state.target_id = obj_id;
+    g_cow_tracking_state.target_class = class_id;
+    g_cow_tracking_state.tracking_priority = class_id;
+    g_cow_tracking_state.lost_count = 0;
+    g_cow_tracking_state.last_x = x;
+    g_cow_tracking_state.last_y = y;
+    g_cow_tracking_state.last_width = width;
+    g_cow_tracking_state.last_height = height;
+    g_cow_tracking_state.last_update_time = time(NULL);
+    g_cow_tracking_state.tracking_start_time = time(NULL);
+    
+    // 초기 위치로 이동
+    track_cow_with_area_move(x, y, width, height);
+    
+    // 타이머 시작 (100ms 주기)
+    if (g_cow_tracking_state.timer_id == 0) {
+        g_cow_tracking_state.timer_id = g_timeout_add(100, tracking_timer_callback, NULL);
+    }
+    
+    // 이벤트 녹화 시작
+    if (class_id == CLASS_LABOR_SIGN_COW) {
+        send_event_to_recorder_simple(class_id, g_source_cam_idx);
+    }
+}
+
+// 트래킹 중지
+void stop_cow_tracking(void) {
+    if (!g_cow_tracking_state.is_tracking) {
+        return;
+    }
+    
+    // 타이머 정리
+    if (g_cow_tracking_state.timer_id > 0) {
+        g_source_remove(g_cow_tracking_state.timer_id);
+        g_cow_tracking_state.timer_id = 0;
+    }
+    
+    g_cow_tracking_state.is_tracking = FALSE;
+    g_cow_tracking_state.target_id = -1;
+    g_cow_tracking_state.target_class = CLASS_NORMAL_COW;
+    
+    // PTZ 정지
+    send_ptz_move_cmd(0, 0);
+    
+    glog_info("Cow tracking stopped\n");
+    
+    // Auto PTZ 재개
+    if (is_work_auto_ptz()) {
+        resume_auto_ptz();
+        glog_info("Auto PTZ resumed\n");
+    }
+}

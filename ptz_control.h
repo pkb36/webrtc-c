@@ -103,6 +103,7 @@ int goto_manual_preset(int preset_index);
 int goto_auto_preset(int preset_index);
 void move_and_stop_ptz_immediate(int direction, int speed);
 void update_ptz_watchdog(void);
+gboolean send_ptz_diagonal_move(int pan_direction, int tilt_direction, int speed);
 
 // 전역 변수
 extern int ptz_err_code;

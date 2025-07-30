@@ -150,6 +150,21 @@ typedef struct {
     int total_cows;      // 전체 소 개수
 } HerdTempStats;
 
+typedef struct {
+    gboolean is_tracking;
+    int target_id;
+    int target_class;
+    int last_x, last_y;
+    int last_width, last_height;
+    time_t last_update_time;
+    time_t tracking_start_time;
+    int lost_count;
+    int tracking_priority;
+    guint timer_id;  // 타이머 ID 저장
+} CowTrackingState;
+
+extern CowTrackingState g_cow_tracking_state;
+
 extern int g_event_class_id;
 extern CurlIinfoType g_curlinfo;
 extern GstElement *g_pipeline;
@@ -191,5 +206,9 @@ BboxColor get_object_color(guint camera_id, guint object_id, gint class_id);
 int send_notification_to_server(int class_id);
 void process_fever_detection(int cam_idx);
 void calculate_herd_temperature_stats(HerdTempStats *stats);
+
+void start_cow_tracking(int obj_id, int class_id, int x, int y, int width, int height);
+void stop_cow_tracking(void);
+gboolean track_cow_with_area_move(int x, int y, int width, int height);
 
 #endif

@@ -450,7 +450,7 @@ void terminate_program() // LJH, 252026
 {
     glog_trace("Stop program will be called in 3 seconds...\n");
     sleep(3);
-    execute_process("/home/nvidia/webrtc/stop.sh", FALSE);
+    execute_process("sudo systemctl restart gstream_main", FALSE);
 }
 
 gboolean cleanup_and_retry_connect(const gchar *msg, enum AppState state)
