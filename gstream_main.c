@@ -190,6 +190,18 @@ static void process_ptz_command(const char *command)
     {
         send_pipe_data("Focus_Position");
     }
+    else if (strcmp(cmd_name, "test_area_move") == 0)
+    {
+        send_pipe_data("test_area_move");
+    }
+    else if (strcmp(cmd_name, "test_point_click") == 0)
+    {
+        send_pipe_data("test_point_click");
+    }
+    else if (strcmp(cmd_name, "get_setting") == 0)
+    {
+        send_pipe_data("get_setting");
+    }
     else if (strcmp(cmd_name, "cur_auto_ptz_position") == 0)
     {
         send_pipe_data("cur_auto_ptz_position");

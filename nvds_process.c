@@ -397,8 +397,10 @@ void check_events_for_notification(int cam_idx, int init)
 				obj_info[cam_idx][obj_id].notification_flag = 1; // send notification later
 
 				if ((obj_info[cam_idx][obj_id].class_id == CLASS_FLIP_COW ||
-					 obj_info[cam_idx][obj_id].class_id == CLASS_LABOR_SIGN_COW))
-				{ // 설정에서 자동 트래킹 활성화 여부 확인
+					 obj_info[cam_idx][obj_id].class_id == CLASS_LABOR_SIGN_COW) &&
+					cam_idx == RGB_CAM)
+				{
+					printf("Starting cow tracking for obj_id=%d, class_id=%d\n", obj_id, obj_info[cam_idx][obj_id].class_id);
 
 					start_cow_tracking(
 						obj_id,
@@ -1602,28 +1604,61 @@ static GstPadProbeReturn osd_sink_pad_buffer_probe(GstPad *pad, GstPadProbeInfo 
 			obj_meta->rect_params.border_width = 1;
 			obj_meta->text_params.set_bg_clr = 0;
 
-			if (g_cow_tracking_state.is_tracking && 
-                obj_meta->object_id == g_cow_tracking_state.target_id) {
-                
-                // 클래스가 정상으로 변경되었는지 확인
-                if (obj_meta->class_id == CLASS_NORMAL_COW || 
-                    obj_meta->class_id == CLASS_NORMAL_COW_SITTING) {
-                    glog_info("Tracked object returned to normal state\n");
-                    stop_cow_tracking();
-                } else if (obj_meta->class_id == g_cow_tracking_state.target_class) {
-                    // 최신 위치 정보 저장
-                    g_cow_tracking_state.last_x = obj_meta->rect_params.left;
-                    g_cow_tracking_state.last_y = obj_meta->rect_params.top;
-                    g_cow_tracking_state.last_width = obj_meta->rect_params.width;
-                    g_cow_tracking_state.last_height = obj_meta->rect_params.height;
-                    g_cow_tracking_state.last_update_time = time(NULL);
-                    g_cow_tracking_state.lost_count = 0;  // 리셋
-                    
-                    glog_debug("Updated tracking position: (%d,%d) %dx%d\n",
-                              g_cow_tracking_state.last_x, g_cow_tracking_state.last_y,
-                              g_cow_tracking_state.last_width, g_cow_tracking_state.last_height);
-                }
-            }
+			// if (cam_idx == RGB_CAM)
+			// {
+			// 	printf("obj_id=%d, class_id=%d, confidence=%.2f, cam_idx=%d\n",
+			// 		   obj_meta->object_id, obj_meta->class_id, obj_meta->confidence, cam_idx);
+			// }
+
+			if (g_cow_tracking_state.is_tracking &&
+				obj_meta->object_id == g_cow_tracking_state.target_id &&
+				cam_idx == RGB_CAM)
+			{
+				// printf("Tracking cow %ld at (%f,%f) %fx%f\n",
+				// 	   obj_meta->object_id,
+				// 	   obj_meta->rect_params.left,
+				// 	   obj_meta->rect_params.top,
+				// 	   obj_meta->rect_params.width,
+				// 	   obj_meta->rect_params.height);
+
+				// 클래스가 정상으로 변경되었는지 확인
+				if (obj_meta->class_id == CLASS_NORMAL_COW ||
+					obj_meta->class_id == CLASS_NORMAL_COW_SITTING)
+				{
+					glog_debug("Tracked object returned to normal state\n");
+					stop_cow_tracking();
+				}
+				// if (obj_meta->class_id == g_cow_tracking_state.target_class)
+				else if (obj_meta->class_id == g_cow_tracking_state.target_class)
+				{
+					// 최신 위치 정보 저장
+					g_cow_tracking_state.last_x = obj_meta->rect_params.left;
+					g_cow_tracking_state.last_y = obj_meta->rect_params.top;
+					g_cow_tracking_state.last_width = obj_meta->rect_params.width;
+					g_cow_tracking_state.last_height = obj_meta->rect_params.height;
+					g_cow_tracking_state.last_update_time = time(NULL);
+					g_cow_tracking_state.lost_count = 0; // 리셋
+
+					glog_debug("Updated tracking position: (%d,%d) %dx%d\n",
+							   g_cow_tracking_state.last_x, g_cow_tracking_state.last_y,
+							   g_cow_tracking_state.last_width, g_cow_tracking_state.last_height);
+				}
+			}
+
+			// if ((obj_meta->class_id == CLASS_FLIP_COW ||
+			// 	 obj_meta->class_id == CLASS_LABOR_SIGN_COW ||
+			// 	 obj_meta->class_id == CLASS_NORMAL_COW) && // 일반 소 추가
+			// 	cam_idx == RGB_CAM &&
+			// 	!g_cow_tracking_state.is_tracking) // 아직 트래킹 중이 아닐 때만
+			// {
+			// 	start_cow_tracking(
+			// 		obj_meta->object_id,
+			// 		obj_meta->class_id,
+			// 		obj_meta->rect_params.left,
+			// 		obj_meta->rect_params.top,
+			// 		obj_meta->rect_params.width,
+			// 		obj_meta->rect_params.height);
+			// }
 
 			if (cam_idx == THERMAL_CAM)
 			{
@@ -2083,6 +2118,8 @@ void setup_nv_analysis()
 {
 	glog_trace("g_config.device_cnt=%d\n", g_config.device_cnt);
 
+	g_cow_tracking_state.is_tracking = FALSE;
+
 	init_all_circular_buffers();
 	set_event_save_callback(on_event_save_complete, NULL);
 
@@ -2170,174 +2207,150 @@ int is_event_recording()
 	return g_event_recording;
 }
 
-gboolean track_cow_with_area_move(int x, int y, int width, int height) {
-    if (!is_open_serial()) {
-        glog_error("PTZ serial not open for tracking\n");
-        return FALSE;
-    }
-    
-    // 화면 중앙 기준
-    int center_x = x + width / 2;
-    int center_y = y + height / 2;
-    
-    // 설정값 사용
-    int screen_center_x = 960;  // 1920/2
-    int screen_center_y = 540;  // 1080/2
-    
-    // int diff_x = abs(center_x - screen_center_x);
-    // int diff_y = abs(center_y - screen_center_y);
-    
-    // 동적 속도 계산
-    int speed = 30;
-    // if (diff_x > 500 || diff_y > 300) {
-    //     speed = g_setting.tracking_speed_max > 0 ? g_setting.tracking_speed_max : 50;
-    // } else if (diff_x < 200 && diff_y < 150) {
-    //     speed = g_setting.tracking_speed_min > 0 ? g_setting.tracking_speed_min : 20;
-    // }
-    
-    glog_debug("Tracking move: center(%d,%d) -> (%d,%d), speed=%d\n", 
-              center_x, center_y, screen_center_x, screen_center_y, speed);
-    
-    // Area Move 명령 전송
-    unsigned char data[14];
-    int len = 0;
-    
-    data[len++] = 0x96; // Sync
-    data[len++] = 0x00; // Addr
-    data[len++] = 0x27; // CmdL (0x0127)
-    data[len++] = 0x41; // CmdH (no response)
-    data[len++] = 0x09; // Data Size
-    
-    // 영역 좌표 설정
-    data[len++] = x & 0xFF;
-    data[len++] = (x >> 8) & 0xFF;
-    data[len++] = y & 0xFF;
-    data[len++] = (y >> 8) & 0xFF;
-    data[len++] = (x + width) & 0xFF;
-    data[len++] = ((x + width) >> 8) & 0xFF;
-    data[len++] = (y + height) & 0xFF;
-    data[len++] = ((y + height) >> 8) & 0xFF;
-    data[len++] = speed;
-    
-    data[13] = get_checksum(data, 13);
-    
-    write_serial(data, 14);
-    
-    return TRUE;
+gboolean track_cow_with_area_move(int x, int y, int width, int height)
+{
+	// 화면 중앙 기준
+	int center_x = x + width / 2;
+	int center_y = y + height / 2;
+
+	glog_debug("tracking move to area: "
+			   "x=%d, y=%d, width=%d, height=%d\n",
+			   x, y, width, height);
+
+	return send_ptz_relative_move_by_pixel_offset(center_x, center_y, 20);
 }
 
 // 타이머 콜백 함수
-static gboolean tracking_timer_callback(gpointer user_data) {
-    if (!g_cow_tracking_state.is_tracking) {
-        return G_SOURCE_REMOVE;
-    }
-    
-    time_t current_time = time(NULL);
-    
-    // 최대 트래킹 시간 체크 (5분)
-    if (current_time - g_cow_tracking_state.tracking_start_time > 300) {
-        glog_info("Maximum tracking duration (5min) reached\n");
-        stop_cow_tracking();
-        return G_SOURCE_REMOVE;
-    }
-    
-    // 최근 업데이트가 있었는지 확인
-    if (current_time - g_cow_tracking_state.last_update_time > 2) {
-        g_cow_tracking_state.lost_count++;
-        if (g_cow_tracking_state.lost_count > 15) {  // 1.5초
-            glog_info("Object lost in tracking (no update for %d counts)\n", 
-                     g_cow_tracking_state.lost_count);
-            stop_cow_tracking();
-            return G_SOURCE_REMOVE;
-        }
-    } else {
-        // PTZ 이동 실행
-        if (g_cow_tracking_state.last_width > 0 && g_cow_tracking_state.last_height > 0) {
-            track_cow_with_area_move(
-                g_cow_tracking_state.last_x,
-                g_cow_tracking_state.last_y,
-                g_cow_tracking_state.last_width,
-                g_cow_tracking_state.last_height
-            );
-            g_cow_tracking_state.lost_count = 0;
-        }
-    }
-    
-    return G_SOURCE_CONTINUE;
+static gboolean tracking_timer_callback(gpointer user_data)
+{
+	if (!g_cow_tracking_state.is_tracking)
+	{
+		return G_SOURCE_REMOVE;
+	}
+
+	time_t current_time = time(NULL);
+
+	// 최대 트래킹 시간 체크 (5분)
+	if (current_time - g_cow_tracking_state.tracking_start_time > 300)
+	{
+		glog_info("Maximum tracking duration (5min) reached\n");
+		stop_cow_tracking();
+		return G_SOURCE_REMOVE;
+	}
+
+	// 최근 업데이트가 있었는지 확인
+	if (current_time - g_cow_tracking_state.last_update_time > 2)
+	{
+		g_cow_tracking_state.lost_count++;
+		if (g_cow_tracking_state.lost_count > 15)
+		{ // 1.5초
+			glog_info("Object lost in tracking (no update for %d counts)\n",
+					  g_cow_tracking_state.lost_count);
+			stop_cow_tracking();
+			return G_SOURCE_REMOVE;
+		}
+	}
+	else
+	{
+		// PTZ 이동 실행
+		if (g_cow_tracking_state.last_width > 0 && g_cow_tracking_state.last_height > 0)
+		{
+			track_cow_with_area_move(
+				g_cow_tracking_state.last_x,
+				g_cow_tracking_state.last_y,
+				g_cow_tracking_state.last_width,
+				g_cow_tracking_state.last_height);
+			g_cow_tracking_state.lost_count = 0;
+		}
+	}
+
+	return G_SOURCE_CONTINUE;
 }
 
 // 트래킹 시작
-void start_cow_tracking(int obj_id, int class_id, int x, int y, int width, int height) {
-    // 우선순위 체크
-    if (g_cow_tracking_state.is_tracking) {
-        if (class_id == CLASS_LABOR_SIGN_COW && 
-            g_cow_tracking_state.target_class != CLASS_LABOR_SIGN_COW) {
-            glog_info("Higher priority event detected, switching tracking\n");
-            stop_cow_tracking();
-        } else if (g_cow_tracking_state.tracking_priority >= class_id) {
-            return;  // 현재 트래킹이 우선순위가 더 높음
-        }
-    }
-    
-    // Auto PTZ 일시정지
-    if (is_work_auto_ptz()) {
-        pause_auto_ptz();
-        glog_info("Auto PTZ paused for tracking\n");
-    }
-    
-    glog_info("Starting cow tracking: obj_id=%d, class=%d, pos=(%d,%d), size=%dx%d\n", 
-              obj_id, class_id, x, y, width, height);
-    
-    g_cow_tracking_state.is_tracking = TRUE;
-    g_cow_tracking_state.target_id = obj_id;
-    g_cow_tracking_state.target_class = class_id;
-    g_cow_tracking_state.tracking_priority = class_id;
-    g_cow_tracking_state.lost_count = 0;
-    g_cow_tracking_state.last_x = x;
-    g_cow_tracking_state.last_y = y;
-    g_cow_tracking_state.last_width = width;
-    g_cow_tracking_state.last_height = height;
-    g_cow_tracking_state.last_update_time = time(NULL);
-    g_cow_tracking_state.tracking_start_time = time(NULL);
-    
-    // 초기 위치로 이동
-    track_cow_with_area_move(x, y, width, height);
-    
-    // 타이머 시작 (100ms 주기)
-    if (g_cow_tracking_state.timer_id == 0) {
-        g_cow_tracking_state.timer_id = g_timeout_add(100, tracking_timer_callback, NULL);
-    }
-    
-    // 이벤트 녹화 시작
-    if (class_id == CLASS_LABOR_SIGN_COW) {
-        send_event_to_recorder_simple(class_id, g_source_cam_idx);
-    }
+void start_cow_tracking(int obj_id, int class_id, int x, int y, int width, int height)
+{
+	// 우선순위 체크
+	if (g_cow_tracking_state.is_tracking)
+	{
+		if (class_id == CLASS_LABOR_SIGN_COW &&
+			g_cow_tracking_state.target_class != CLASS_LABOR_SIGN_COW)
+		{
+			glog_info("Higher priority event detected, switching tracking\n");
+			stop_cow_tracking();
+		}
+		else if (g_cow_tracking_state.tracking_priority >= class_id)
+		{
+			return; // 현재 트래킹이 우선순위가 더 높음
+		}
+	}
+
+	// Auto PTZ 일시정지
+	if (is_work_auto_ptz())
+	{
+		pause_auto_ptz();
+		glog_info("Auto PTZ paused for tracking\n");
+	}
+
+	glog_info("Starting cow tracking: obj_id=%d, class=%d, pos=(%d,%d), size=%dx%d\n",
+			  obj_id, class_id, x, y, width, height);
+
+	g_cow_tracking_state.is_tracking = TRUE;
+	g_cow_tracking_state.target_id = obj_id;
+	g_cow_tracking_state.target_class = class_id;
+	g_cow_tracking_state.tracking_priority = class_id;
+	g_cow_tracking_state.lost_count = 0;
+	g_cow_tracking_state.last_x = x;
+	g_cow_tracking_state.last_y = y;
+	g_cow_tracking_state.last_width = width;
+	g_cow_tracking_state.last_height = height;
+	g_cow_tracking_state.last_update_time = time(NULL);
+	g_cow_tracking_state.tracking_start_time = time(NULL);
+
+	// 초기 위치로 이동
+	track_cow_with_area_move(x, y, width, height);
+
+	// 타이머 시작 (100ms 주기)
+	if (g_cow_tracking_state.timer_id == 0)
+	{
+		g_cow_tracking_state.timer_id = g_timeout_add(100, tracking_timer_callback, NULL);
+	}
+
+	// 이벤트 녹화 시작
+	if (class_id == CLASS_LABOR_SIGN_COW)
+	{
+		send_event_to_recorder_simple(class_id, g_source_cam_idx);
+	}
 }
 
 // 트래킹 중지
-void stop_cow_tracking(void) {
-    if (!g_cow_tracking_state.is_tracking) {
-        return;
-    }
-    
-    // 타이머 정리
-    if (g_cow_tracking_state.timer_id > 0) {
-        g_source_remove(g_cow_tracking_state.timer_id);
-        g_cow_tracking_state.timer_id = 0;
-    }
-    
-    g_cow_tracking_state.is_tracking = FALSE;
-    g_cow_tracking_state.target_id = -1;
-    g_cow_tracking_state.target_class = CLASS_NORMAL_COW;
-    
-    // PTZ 정지
-    send_ptz_move_cmd(0, 0);
-    
-    glog_info("Cow tracking stopped\n");
-    
-    // Auto PTZ 재개
-    if (is_work_auto_ptz()) {
-        resume_auto_ptz();
-        glog_info("Auto PTZ resumed\n");
-    }
+void stop_cow_tracking(void)
+{
+	if (!g_cow_tracking_state.is_tracking)
+	{
+		return;
+	}
+
+	// 타이머 정리
+	if (g_cow_tracking_state.timer_id > 0)
+	{
+		g_source_remove(g_cow_tracking_state.timer_id);
+		g_cow_tracking_state.timer_id = 0;
+	}
+
+	g_cow_tracking_state.is_tracking = FALSE;
+	g_cow_tracking_state.target_id = -1;
+	g_cow_tracking_state.target_class = CLASS_NORMAL_COW;
+
+	// PTZ 정지
+	send_ptz_move_cmd(0, 0);
+
+	glog_info("Cow tracking stopped\n");
+
+	// Auto PTZ 재개
+	if (is_work_auto_ptz())
+	{
+		resume_auto_ptz();
+		glog_info("Auto PTZ resumed\n");
+	}
 }

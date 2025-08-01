@@ -543,6 +543,35 @@ gboolean process_message_cmd(gJSONObj *jsonObj)
         }
         send_ptz_move_serial_data_immediate(msg);
     }
+    else if (json_object_has_member(object, "ptz_move_point"))
+    {
+        const gchar *msg;
+        if (!cockpit_json_get_string(object, "ptz_move_point", NULL, &msg, FALSE))
+        {
+            glog_trace("Can not get message PTZ Move PointCommand\n");
+            return FALSE;
+        }
+
+        char str[100];
+        strcpy(str, msg);
+
+        int x = 0, y = 0;
+        int count = 0;
+
+        char *ptr = strtok((char *)str, ",");
+        while (ptr != NULL)
+        {
+            if (count == 1)
+                x = atoi(ptr);
+            else if (count == 2)
+                y = atoi(ptr);
+
+            count++;
+            ptr = strtok(NULL, ",");
+        }
+
+        send_ptz_relative_move_by_pixel_offset(x, y, 20);
+    }
     else if (json_object_has_member(object, "record"))
     {
         const gchar *on_off;
@@ -954,6 +983,7 @@ gboolean process_message_cmd(gJSONObj *jsonObj)
 
     else
     {
+        printf("Unknown Command [%s] \n", json_object_get_string_member(object, "action"));
         glog_trace("Unknown Command.... \n");
         return FALSE;
     }
@@ -1070,6 +1100,33 @@ void send_pipe_data(const gchar *str)
     else if(strstr(str, "cur_auto_ptz_position") != NULL)
     {
         display_auto_ptz_status();
+    }
+    else if (strstr(str, "test_area_move") != NULL)
+    {
+        glog_info("Sending test AreaMove command\n");
+        
+        send_ptz_area_move_with_response(500, 405, 600, 1005, 20);
+    }
+    else if (strstr(str, "test_point_click") != NULL)
+    {
+        glog_info("Sending test PointClickMove command\n");
+        
+        send_ptz_relative_move_by_pixel_offset(100, 100, 20);
+    }
+    else if (strstr(str, "get_setting") != NULL)
+    {
+        glog_info("Sending get_setting command\n");
+        
+        CAM_STAT_WW current_settings;
+    
+        if (get_wonwoo_settings(&current_settings)) {
+            parse_wonwoo_settings(&current_settings);
+            
+            // 특정 설정 확인
+            if (current_settings.p1 & 0x20) {  // DZ bit
+                glog_info("Digital Zoom is currently ON\n");
+            }
+        }
     }
     else
     {

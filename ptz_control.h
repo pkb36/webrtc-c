@@ -50,6 +50,23 @@ typedef struct {
     unsigned short iris;
 } PTZPosition;
 
+typedef struct {
+    unsigned char p0;   // WB, AE_MODE, DSS, DN, FCS, IS, DFG, FLK, INT
+    unsigned char p1;   // FLIP, DZ, WDR, BLC
+    unsigned char p2;   // WB_RED
+    unsigned char p3;   // WB_BLUE
+    unsigned char p4;   // DSS_LMT
+    unsigned char p5;   // BRIGHTNESS or ExpComp
+    unsigned char p6;   // MAN_IRIS
+    unsigned char p7;   // MAN_SHUTTER
+    unsigned char p8;   // MAN_GAIN
+    unsigned char p9;   // APT_LEVEL
+    unsigned char p10;  // DFG_LEVEL
+    unsigned char p11;  // INTERVAL_TIME
+    unsigned char p12;  // WB_EXTEND
+    unsigned char p13;  // COLOR_LEVEL
+} CAM_STAT_WW;
+
 /* PTZ Data Format
  [Flag][PTZ_DATA]
  Flag => 0,1 check data setting..
@@ -104,6 +121,13 @@ int goto_auto_preset(int preset_index);
 void move_and_stop_ptz_immediate(int direction, int speed);
 void update_ptz_watchdog(void);
 gboolean send_ptz_diagonal_move(int pan_direction, int tilt_direction, int speed);
+gboolean get_wonwoo_settings(CAM_STAT_WW *settings);
+void parse_wonwoo_settings(CAM_STAT_WW *settings);
+gboolean send_ptz_move_to_pixel(int x, int y, int speed);
+gboolean send_ptz_absolute_move(int pan_pos, int tilt_pos, unsigned char *zoom_focus_data, int speed);
+gboolean send_ptz_relative_move_by_pixel_offset(int x, int y, int speed);
+gboolean send_ptz_area_move(int x1, int y1, int x2, int y2, int speed);
+gboolean send_ptz_area_move_with_response(int x1, int y1, int x2, int y2, int speed);
 
 // 전역 변수
 extern int ptz_err_code;

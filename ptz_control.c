@@ -493,6 +493,10 @@ void *process_auto_move_ptz(void *arg)
 
   while (AUTO_PTZ_MOVE_SEQ[0])
   {
+    if(g_cow_tracking_state.is_tracking)
+    {
+      continue;
+    }
     // 줌 처리 로직 (기존과 동일)
     if (continue_tag == 0)
     {
@@ -679,11 +683,11 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
   {
     if (ptz_speed > 0)
     {
-      glog_trace("Send PTZ UART command(Direction:%s,Speed:%d)\n", direction_str[direction], ptz_speed);
+      // glog_trace("Send PTZ UART command(Direction:%s,Speed:%d)\n", direction_str[direction], ptz_speed);
     }
     else
     {
-      glog_trace("Send PTZ UART stop command\n");
+      // glog_trace("Send PTZ UART stop command\n");
     }
   }
   else
@@ -793,9 +797,9 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
     }
     else
     {
-      glog_trace("Received UART response : ");
-      if (iRet <= sizeof(read_data))
-        print_serial_data(read_data, iRet);
+      // glog_trace("Received UART response : ");
+      // if (iRet <= sizeof(read_data))
+      //  print_serial_data(read_data, iRet);
 
 // #define TEST_CODE
 #ifdef TEST_CODE
@@ -940,7 +944,7 @@ void send_ptz_move_serial_data_immediate(const char *s)
 {
   int count = 0;
   int direction = 0, ptz_delay = 0, ptz_speed = 0;
-  glog_trace("Received PTZ command from server: %s\n", s);
+  // glog_trace("Received PTZ command from server: %s\n", s);
   char str[100];
   strcpy(str, s);
 
@@ -956,7 +960,7 @@ void send_ptz_move_serial_data_immediate(const char *s)
     count++;
     ptr = strtok(NULL, ",");
   }
-  glog_trace("direction:%d,delay:%d,speed:%d\n", direction, ptz_delay, ptz_speed);
+  // glog_trace("direction:%d,delay:%d,speed:%d\n", direction, ptz_delay, ptz_speed);
   move_and_stop_ptz_immediate(direction, ptz_speed);
 }
 
@@ -1305,3 +1309,373 @@ void move_and_stop_ptz_immediate(int direction, int speed)
     g_move_speed = 0;
   }
 }
+
+gboolean get_wonwoo_settings(CAM_STAT_WW *settings) {
+    if (!is_open_serial()) {
+        glog_error("PTZ serial is not open\n");
+        return FALSE;
+    }
+    
+    unsigned char cmd_data[6];
+    unsigned char read_data[20];
+    int len = 0;
+    
+    // Get OneTime_WW 명령 구성 (0x0280)
+    cmd_data[len++] = 0x96;  // Sync
+    cmd_data[len++] = 0x00;  // Addr
+    cmd_data[len++] = 0x80;  // CmdL
+    cmd_data[len++] = 0x02;  // CmdH
+    cmd_data[len++] = 0x00;  // Data Size (0)
+    cmd_data[len++] = get_checksum(cmd_data, 5);
+    
+    // 응답 읽기 (14바이트 데이터 + 6바이트 헤더 = 20바이트)
+    int result = read_cmd_timeout(cmd_data, 6, read_data, 20, 1);
+    
+    if (result < 0) {
+        glog_error("Failed to read Wonwoo settings\n");
+        return FALSE;
+    }
+    
+    // 응답 파싱
+    if (read_data[2] == 0x80 && read_data[3] == 0x82) {  // Response 0x8280
+        // 데이터 복사 (read_data[5]부터 14바이트)
+        memcpy(settings, &read_data[5], sizeof(CAM_STAT_WW));
+        
+        glog_info("Wonwoo settings read successfully\n");
+        return TRUE;
+    }
+    
+    glog_error("Invalid response for Get OneTime_WW\n");
+    return FALSE;
+}
+
+void parse_wonwoo_settings(CAM_STAT_WW *settings) {
+    glog_info("=== Wonwoo Camera Settings ===\n");
+    
+    // P0 파싱
+    glog_info("WB Mode: %s\n", (settings->p0 & 0x01) ? "Manual" : "Auto");
+    glog_info("AE Mode: %d\n", (settings->p0 >> 1) & 0x07);
+    glog_info("DSS: %s\n", ((settings->p0 >> 4) & 0x01) ? "Auto" : "Off");
+    glog_info("DN: %d\n", (settings->p0 >> 5) & 0x03);
+    glog_info("FCS: %s\n", ((settings->p0 >> 7) & 0x01) ? "Auto" : "Manual");
+    
+    // P1 파싱
+    glog_info("IS: %s\n", (settings->p1 & 0x01) ? "On" : "Off");
+    glog_info("DFG: %s\n", ((settings->p1 >> 1) & 0x01) ? "On" : "Off");
+    glog_info("FLK: %s\n", ((settings->p1 >> 2) & 0x01) ? "On" : "Off");
+    glog_info("INT: %s\n", ((settings->p1 >> 3) & 0x01) ? "On" : "Off");
+    glog_info("FLIP: %s\n", ((settings->p1 >> 4) & 0x01) ? "On" : "Off");
+    glog_info("DZ: %s\n", ((settings->p1 >> 5) & 0x01) ? "On" : "Off");
+    glog_info("WDR: %s\n", ((settings->p1 >> 6) & 0x01) ? "On" : "Off");
+    glog_info("BLC: %s\n", ((settings->p1 >> 7) & 0x01) ? "On" : "Off");
+    
+    // 나머지 값들
+    glog_info("WB_RED: 0x%02X\n", settings->p2);
+    glog_info("WB_BLUE: 0x%02X\n", settings->p3);
+    glog_info("DSS_LMT: %d\n", settings->p4);
+    glog_info("BRIGHTNESS: 0x%02X\n", settings->p5);
+    glog_info("MAN_IRIS: 0x%02X\n", settings->p6);
+    glog_info("MAN_SHUTTER: 0x%02X\n", settings->p7);
+    glog_info("MAN_GAIN: 0x%02X\n", settings->p8);
+    glog_info("APT_LEVEL: 0x%02X\n", settings->p9);
+    glog_info("DFG_LEVEL: 0x%02X\n", settings->p10);
+    glog_info("INTERVAL_TIME: %d\n", settings->p11);
+    glog_info("WB_EXTEND: %d\n", settings->p12);
+    glog_info("COLOR_LEVEL: 0x%02X\n", settings->p13);
+    glog_info("==============================\n");
+}
+
+gboolean send_ptz_move_to_pixel(int x, int y, int speed)
+{
+    unsigned char data[21];
+    int len = 0;
+
+    // 1. 현재 위치 + 줌/포커스 읽기
+    unsigned char current_pos[17];
+    unsigned char cmd_get_pos[7] = {0x96, 0x00, 0x06, 0x01, 0x01, 0x01, 0x9F};
+    if (read_cmd_timeout(cmd_get_pos, 7, current_pos, 17, 1) < 0)
+        return FALSE;
+
+    // 2. 영상 해상도 및 카메라 FOV 정보
+    int image_width = 1920;
+    int image_height = 1080;
+    float h_fov_deg = 90.0f;  // 수평 시야각
+    float v_fov_deg = 60.0f;  // 수직 시야각
+
+    // 3. 픽셀 좌표 → 각도 환산
+    float pan_angle = ((x - image_width / 2.0f) / image_width) * h_fov_deg;
+    float tilt_angle = ((y - image_height / 2.0f) / image_height) * v_fov_deg * -1.0f;
+
+    float pan_absolute = 180.0f + pan_angle;
+    float tilt_absolute = 90.0f + tilt_angle;
+
+    int pan_pos = (int)(pan_absolute * 100.0f);   // 0.01도 단위
+    int tilt_pos = (int)(tilt_absolute * 100.0f);
+
+    // 4. Set All Position 명령 생성
+    data[len++] = 0x96;
+    data[len++] = 0x00;
+    data[len++] = 0x01;
+    data[len++] = 0x41;
+    data[len++] = 0x0F;
+
+    // Pan
+    data[len++] = pan_pos & 0xFF;
+    data[len++] = (pan_pos >> 8) & 0xFF;
+
+    // Tilt
+    data[len++] = tilt_pos & 0xFF;
+    data[len++] = (tilt_pos >> 8) & 0xFF;
+
+    // Optical Zoom, Digital Zoom, Focus 유지
+    memcpy(&data[len], &current_pos[9], 6);
+    len += 6;
+
+    // Speeds
+    data[len++] = speed;
+    data[len++] = speed;
+    data[len++] = 0x20;
+    data[len++] = 0x20;
+
+    // Pan direction
+    data[len++] = 0x00;
+
+    // Checksum
+    data[len] = get_checksum(data, 20);
+
+    // 전송
+    write_serial(data, 21);
+    return TRUE;
+}
+
+gboolean send_ptz_absolute_move(int pan_pos, int tilt_pos, unsigned char *zoom_focus_data, int speed)
+{
+    unsigned char data[21];
+    int len = 0;
+
+    data[len++] = 0x96; // Sync
+    data[len++] = 0x00; // Addr
+    data[len++] = 0x01; // CmdL
+    data[len++] = 0x41; // CmdH (no response)
+    data[len++] = 0x0F; // Size = 15 bytes
+
+    // Pan
+    data[len++] = pan_pos & 0xFF;
+    data[len++] = (pan_pos >> 8) & 0xFF;
+
+    // Tilt
+    data[len++] = tilt_pos & 0xFF;
+    data[len++] = (tilt_pos >> 8) & 0xFF;
+
+    // Zoom / Focus 유지
+    memcpy(&data[len], zoom_focus_data, 6);
+    len += 6;
+
+    // Speeds
+    data[len++] = speed;
+    data[len++] = speed;
+    data[len++] = 0x20;  // Zoom speed
+    data[len++] = 0x20;  // Focus speed
+
+    data[len++] = 0x00;  // Pan direction
+
+    data[len] = get_checksum(data, 20);
+
+    // 실제 전송
+    write_serial(data, 21);
+    return TRUE;
+}
+
+gboolean send_ptz_relative_move_by_pixel_offset(int x, int y, int speed) {
+    int image_width = 1920;
+    int image_height = 1080;
+
+    // 화면 중심
+    int center_x = image_width / 2;
+    int center_y = image_height / 2;
+
+    int dx = x - center_x;
+    int dy = y - center_y;
+
+    // 현재 Pan/Tilt/Zoom 읽기
+    unsigned char current_pos[17];
+    unsigned char cmd_get_pos[7] = {0x96, 0x00, 0x06, 0x01, 0x01, 0x01, 0x9F};
+    if (read_cmd_timeout(cmd_get_pos, 7, current_pos, 17, 1) < 0)
+        return FALSE;
+
+    int current_pan = (current_pos[6] << 8) | current_pos[5];
+    int current_tilt = (current_pos[8] << 8) | current_pos[7];
+    int current_zoom = (current_pos[10] << 8) | current_pos[9];
+
+    printf("[PTZ] Current Position - Pan: %d, Tilt: %d, Zoom: %d\n",
+           current_pan, current_tilt, current_zoom);
+
+    // === MM-308-M2 FOV 계산 ===
+    float zoom_ratio = current_zoom / 16384.0f;
+    
+    float fov_h_wide = 58.9f;
+    float fov_v_wide = 45.3f;
+    float fov_h_tele = 2.11f;
+    float fov_v_tele = 1.61f;
+    
+    float fov_h = fov_h_wide - (fov_h_wide - fov_h_tele) * zoom_ratio;
+    float fov_v = fov_v_wide - (fov_v_wide - fov_v_tele) * zoom_ratio;
+
+    printf("[PTZ] Effective FOV - H: %.2f°, V: %.2f° (zoom_ratio: %.3f)\n", 
+           fov_h, fov_v, zoom_ratio);
+
+    // 픽셀 오프셋 → 각도 오프셋
+    float pan_offset = (dx / (float)image_width) * fov_h;
+    float tilt_offset = (dy / (float)image_height) * fov_v;
+
+    printf("[PTZ] Pixel offset - dx: %d, dy: %d\n", dx, dy);
+    printf("[PTZ] Angle offset - pan: %.2f°, tilt: %.2f°\n", pan_offset, tilt_offset);
+
+    int target_pan = current_pan + (int)(pan_offset * 100.0f);
+    
+    // Tilt: 1 ~ 9000 범위
+    // 화면 위(y=0) → Tilt 1 (위쪽)
+    // 화면 아래(y=1080) → Tilt 9000 (아래쪽)
+    // dy가 양수(화면 아래)일 때 Tilt 증가
+    int target_tilt = current_tilt + (int)(tilt_offset * 100.0f);
+    // int target_tilt = current_tilt - (int)(tilt_offset * 100.0f);  // 부호 변경!
+
+    printf("[PTZ] Target Position - Pan: %d, Tilt: %d\n", target_pan, target_tilt);
+
+    // Pan 범위 처리 (0 ~ 36000)
+    if (target_pan > 36000) {
+        target_pan = target_pan % 36000;
+    } else if (target_pan < 0) {
+        target_pan = 36000 + (target_pan % 36000);
+    }
+
+    // Tilt 범위 제한 (1 ~ 9000)
+    if (target_tilt < 1) {
+        target_tilt = 1;
+    } else if (target_tilt > 9000) {
+        target_tilt = 9000;
+    }
+
+    printf("[PTZ] Final Target - Pan: %d, Tilt: %d\n", target_pan, target_tilt);
+
+    // 줌/포커스는 현재 값 유지
+    return send_ptz_absolute_move(target_pan, target_tilt, &current_pos[9], speed);
+}
+
+gboolean send_ptz_area_move(int x1, int y1, int x2, int y2, int speed)
+{
+    unsigned char data[17];
+    int len = 0;
+
+    // 영상 해상도와 FOV
+    int image_width = 1920;
+    int image_height = 1080;
+    float h_fov_deg = 90.0f;
+    float v_fov_deg = 60.0f;
+
+    // 중심 좌표 계산
+    int cx = (x1 + x2) / 2;
+    int cy = (y1 + y2) / 2;
+
+    // 픽셀 → 각도 오프셋
+    float pan_offset = (cx - image_width / 2.0f) / image_width * h_fov_deg;
+    float tilt_offset = (cy - image_height / 2.0f) / image_height * v_fov_deg * -1.0f;
+
+    // 현재 Pan/Tilt 읽기
+    unsigned char current_pos[17];
+    unsigned char cmd_get_pos[7] = {0x96, 0x00, 0x06, 0x01, 0x01, 0x01, 0x9F};
+    if (read_cmd_timeout(cmd_get_pos, 7, current_pos, 17, 1) < 0)
+        return FALSE;
+
+    int current_pan = (current_pos[6] << 8) | current_pos[5];
+    int current_tilt = (current_pos[8] << 8) | current_pos[7];
+
+    int target_pan = current_pan + (int)(pan_offset * 100.0f);
+    int target_tilt = current_tilt + (int)(tilt_offset * 100.0f);
+
+    // Area Move 패킷 구성
+    data[len++] = 0x96;
+    data[len++] = 0x00;
+    data[len++] = 0x27;  // CmdL
+    data[len++] = 0x41;  // CmdH (응답 없음)
+    data[len++] = 0x09;  // Size = 9 bytes
+
+    // x1, y1
+    data[len++] = x1 & 0xFF;
+    data[len++] = (x1 >> 8) & 0xFF;
+    data[len++] = y1 & 0xFF;
+    data[len++] = (y1 >> 8) & 0xFF;
+
+    // x2, y2
+    data[len++] = x2 & 0xFF;
+    data[len++] = (x2 >> 8) & 0xFF;
+    data[len++] = y2 & 0xFF;
+    data[len++] = (y2 >> 8) & 0xFF;
+
+    // Speed
+    data[len++] = speed;
+
+    // Checksum
+    data[len] = get_checksum(data, 16);
+
+    write_serial(data, 17);
+    return TRUE;
+}
+
+gboolean send_ptz_area_move_with_response(int x1, int y1, int x2, int y2, int speed)
+{
+    unsigned char data[17];
+    int len = 0;
+
+    data[len++] = 0x96;  // Sync
+    data[len++] = 0x00;  // Addr
+    data[len++] = 0x27;  // CmdL
+    data[len++] = 0x01;  // CmdH (응답 있음)
+    data[len++] = 0x09;  // Size = 9
+
+    // 좌상단 (x1, y1)
+    data[len++] = x1 & 0xFF;
+    data[len++] = (x1 >> 8) & 0xFF;
+    data[len++] = y1 & 0xFF;
+    data[len++] = (y1 >> 8) & 0xFF;
+
+    // 우하단 (x2, y2)
+    data[len++] = x2 & 0xFF;
+    data[len++] = (x2 >> 8) & 0xFF;
+    data[len++] = y2 & 0xFF;
+    data[len++] = (y2 >> 8) & 0xFF;
+
+    data[len++] = speed; // Speed
+
+    data[len] = get_checksum(data, 16); // Checksum
+
+    // 명령 전송
+    write_serial(data, 17);
+
+    // 응답 수신 (예: 8바이트 예상)
+    unsigned char resp[7];
+    if (read_cmd_timeout(NULL, 0, resp, sizeof(resp), 1) < 0)
+    {
+        printf("[PTZ] AreaMove 응답 없음\n");
+        return FALSE;
+    }
+
+    // 응답 데이터 출력
+    printf("[PTZ] AreaMove 응답: ");
+    for (int i = 0; i < sizeof(resp); i++)
+    {
+        printf("%02X ", resp[i]);
+    }
+    printf("\n");
+
+    // 응답 유효성 확인 (0x96, 0x00, 0x27, 0x01 등등 체크 가능)
+    if (resp[0] == 0x96 && resp[2] == 0x27 && resp[3] == 0x01)
+    {
+        printf("[PTZ] AreaMove 성공, 응답 수신 완료\n");
+        return TRUE;
+    }
+
+    printf("[PTZ] AreaMove 응답 포맷 오류\n");
+    return FALSE;
+}
+
