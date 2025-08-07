@@ -134,7 +134,6 @@ class CameraRecorder:
             camera_source = self._get_camera_source()
 
         encoder_settings = self._get_encoder_settings()
-        send_encoder_settings = self._get_send_encoder_settings()
         
         # 녹화가 비활성화된 경우 스트리밍만 수행
         if not self.recording_enabled or self.test_pattern:
@@ -468,7 +467,7 @@ class CameraRecorder:
                         time.sleep(self.frame_timeout)
 
                 if self.use_fallback:
-                    self.check_camera_availability()
+                    self.check_camera_recovery()
 
                 # 1초마다 체크
                 time.sleep(1.0)

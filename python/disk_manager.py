@@ -362,6 +362,7 @@ class DiskCleaner:
         
         while True:
             try:
+                self.move_emmc_to_nvme()
                 self.show_status()
                 self.cleanup()
             except KeyboardInterrupt:
@@ -372,6 +373,54 @@ class DiskCleaner:
             
             time.sleep(interval)
 
+    def move_emmc_to_nvme(self, emmc_dir="/home/nvidia/videofile", nvme_base="/home/nvidia/data", min_age_minutes=5):
+        """
+        eMMC → NVMe로 mp4 파일 이동
+        """
+        emmc_dir = Path(emmc_dir)
+        if not emmc_dir.exists():
+            self.logger.warning(f"eMMC 디렉토리 없음: {emmc_dir}")
+            return
+
+        if not self.is_nvme_mounted(nvme_base):
+            self.logger.warning(f"NVMe 마운트 안 됨: {nvme_base} → 이동 생략")
+            return
+
+        now = time.time()
+        moved_count = 0
+        moved_size = 0
+
+        for file in emmc_dir.rglob("*.mp4"):
+            try:
+                stat = file.stat()
+                mtime = stat.st_mtime
+
+                if now - mtime < min_age_minutes * 60:
+                    continue  # 아직 쓰고 있는 파일일 가능성 있음
+
+                # RECORD_YYYYMMDD 디렉토리 생성
+                date_str = datetime.fromtimestamp(mtime).strftime("RECORD_%Y%m%d")
+                target_dir = Path(nvme_base) / date_str
+                target_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(file), target_dir / file.name)
+
+                # 소유권 보정
+                os.system(f"chown nvidia:nvidia {target_dir}/{file.name}")
+                moved_count += 1
+                moved_size += stat.st_size
+
+            except Exception as e:
+                self.logger.error(f"파일 이동 실패: {file} - {e}")
+
+        self.logger.info(f"eMMC → NVMe 이동 완료: {moved_count}개 파일, {moved_size / (1024*1024):.1f}MB 이동됨")
+
+    def is_nvme_mounted(self, mount_point="/home/nvidia/data"):
+        """NVMe 마운트 여부 확인"""
+        with open("/proc/mounts", "r") as f:
+            for line in f:
+                if mount_point in line:
+                    return True
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description='디스크 용량 관리 도구')
@@ -385,7 +434,9 @@ def main():
     parser.add_argument('--interval', type=int, default=300, help='모니터링 간격 (초)')
     parser.add_argument('--status', action='store_true', help='현재 상태만 표시')
     parser.add_argument('--logs-only', action='store_true', help='로그만 정리')
-    
+    parser.add_argument('--move-emmc', action='store_true', help='eMMC에서 NVMe로 mp4 이동')
+    parser.add_argument('--emmc-path', default='/home/nvidia/videofile', help='eMMC 영상 경로')
+
     args = parser.parse_args()
     
     cleaner = DiskCleaner(
@@ -405,6 +456,8 @@ def main():
     elif args.monitor:
         # 계속 모니터링
         cleaner.monitor(interval=args.interval)
+    elif args.move_emmc:
+        cleaner.move_emmc_to_nvme(emmc_dir=args.emmc_path)
     else:
         # 한 번만 실행
         cleaner.show_status()

@@ -2313,7 +2313,7 @@ void start_cow_tracking(int obj_id, int class_id, int x, int y, int width, int h
 	// 타이머 시작 (100ms 주기)
 	if (g_cow_tracking_state.timer_id == 0)
 	{
-		g_cow_tracking_state.timer_id = g_timeout_add(100, tracking_timer_callback, NULL);
+		g_cow_tracking_state.timer_id = g_timeout_add(4000, tracking_timer_callback, NULL);
 	}
 
 	// 이벤트 녹화 시작
