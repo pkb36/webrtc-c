@@ -402,29 +402,96 @@ void send_image_to_peer(const gchar *peer_id, const gchar *source)
     free(base64_data);
 }
 
-static gchar *camera_cam_setting_template = "{\"color_palette\": %d, \"record_status\": %d, \"analsys_status\": %d, \
-                                              \"ptz_auto_seq\": \"%s\", \"ptz_preset\": \"%s\", \"auto_ptz_preset\": \
-                                               \"%s\", \"auto_ptz_mode\": %d , \"enable_event_notify\": %d}";
+static gchar *camera_cam_setting_template_full = "{"
+    "\"color_palette\": %d, "
+    "\"record_status\": %d, "
+    "\"analsys_status\": %d, " 
+    "\"ptz_auto_seq\": \"%s\", "
+    "\"ptz_preset\": \"%s\", "  // 프리셋 상태 문자열
+    "\"auto_ptz_preset\": \"%s\", "  // 자동 프리셋 상태 문자열
+    "\"auto_ptz_mode\": %d, "
+    "\"enable_event_notify\": %d, "
+    "\"auto_ptz_move_speed\": %d, "
+    "\"ptz_move_speed\": %d, "
+    "\"camera_dn_mode\": %d, "
+    "\"nv_interval\": %d, "
+    "\"opt_flow_threshold\": %d, "
+    "\"opt_flow_apply\": %d, "
+    "\"resnet50_threshold\": %d, "
+    "\"resnet50_apply\": %d, "
+    "\"normal_threshold\": %d, "
+    "\"heat_threshold\": %d, "
+    "\"flip_threshold\": %d, "
+    "\"labor_sign_threshold\": %d, "
+    "\"normal_sitting_threshold\": %d, "
+    "\"display_temp\": %d, "
+    "\"temp_diff_threshold\": %d, "
+    "\"camera_index\": %d, "
+    "\"heat_time\": %d, "
+    "\"flip_time\": %d, "
+    "\"labor_sign_time\": %d, "
+    "\"over_temp_time\": %d, "
+    "\"temp_correction\": %d, "
+    "\"threshold_upper_temp\": %d, "
+    "\"threshold_under_temp\": %d, "
+    "\"temp_apply\": %d, "
+    "\"show_normal_text\": %d"
+    "}";
+
 void send_setting_to_peer(const gchar *peer_id)
 {
     gchar *setting_json;
     gchar *msg;
+    
+    // PTZ 프리셋 상태 문자열 생성 (기존 로직 유지)
     char ptz_status[MAX_PTZ_PRESET + 1] = {0};
+    char auto_ptz_status[MAX_PTZ_PRESET + 1] = {0};
+    
     for (int i = 0; i < MAX_PTZ_PRESET; i++)
     {
         ptz_status[i] = (g_setting.ptz_preset[i][0] == 0) ? '0' : '1';
-    }
-
-    char auto_ptz_status[MAX_PTZ_PRESET + 1] = {0};
-    for (int i = 0; i < MAX_PTZ_PRESET; i++)
-    {
         auto_ptz_status[i] = (g_setting.auto_ptz_preset[i][0] == 0) ? '0' : '1';
     }
+    
+    // 전체 설정을 전송
+    setting_json = g_strdup_printf(camera_cam_setting_template_full, 
+        g_setting.color_pallet,
+        g_setting.record_status,
+        g_setting.analysis_status,  // analsys_status로 전송 (기존 오타 유지)
+        g_setting.auto_ptz_seq,
+        ptz_status,                 // 프리셋 상태 문자열
+        auto_ptz_status,            // 자동 프리셋 상태 문자열
+        is_work_auto_ptz(),         // auto_ptz_mode
+        g_setting.enable_event_notify,
+        g_setting.auto_ptz_move_speed,
+        g_setting.ptz_move_speed,
+        g_setting.camera_dn_mode,
+        g_setting.nv_interval,
+        g_setting.opt_flow_threshold,
+        g_setting.opt_flow_apply,
+        g_setting.resnet50_threshold,
+        g_setting.resnet50_apply,
+        g_setting.normal_threshold,
+        g_setting.heat_threshold,
+        g_setting.flip_threshold,
+        g_setting.labor_sign_threshold,
+        g_setting.normal_sitting_threshold,
+        g_setting.display_temp,
+        g_setting.temp_diff_threshold,
+        g_setting.camera_index,
+        g_setting.heat_time,
+        g_setting.flip_time,
+        g_setting.labor_sign_time,
+        g_setting.over_temp_time,
+        g_setting.temp_correction,
+        g_setting.threshold_upper_temp,
+        g_setting.threshold_under_temp,
+        g_setting.temp_apply,
+        g_setting.show_normal_text
+    );
 
-    setting_json = g_strdup_printf(camera_cam_setting_template, g_setting.color_pallet, g_setting.record_status, g_setting.analysis_status,
-                                   g_setting.auto_ptz_seq, ptz_status, auto_ptz_status, is_work_auto_ptz(), g_setting.enable_event_notify);
-
-    msg = g_strdup_printf(json_msssage_template_string_json, "send_user", peer_id, "setting", setting_json);
+    msg = g_strdup_printf(json_msssage_template_string_json, 
+        "send_user", peer_id, "setting", setting_json);
     send_msg_server(msg);
 
     free(msg);
@@ -683,6 +750,9 @@ gboolean process_message_cmd(gJSONObj *jsonObj)
         char *ptz_preset = (mode == 0) ? g_setting.ptz_preset[id] : g_setting.auto_ptz_preset[id];
         memset(&ptz_preset[0], 0, PTZ_POS_SIZE);
         update_setting(g_config.device_setting_path, &g_setting);
+
+        extern void clear_ptz_preset_memory(int index, int auto_mode);
+        clear_ptz_preset_memory(id, mode);
     }
     else if (json_object_has_member(object, "set_ptz_pos"))
     {
@@ -770,6 +840,10 @@ gboolean process_message_cmd(gJSONObj *jsonObj)
             return FALSE;
         }
         glog_trace("auto_move_ptz:%s (value len=%d)\n", move_seq, strlen(move_seq));
+
+        extern void sync_auto_ptz_list_from_setting(void);
+        sync_auto_ptz_list_from_setting();
+
         if ((ret = auto_move_ptz(move_seq)) == 0)
         {
             strcpy(g_setting.auto_ptz_seq, move_seq); // LJH, moved position

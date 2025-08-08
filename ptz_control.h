@@ -128,6 +128,8 @@ gboolean send_ptz_absolute_move(int pan_pos, int tilt_pos, unsigned char *zoom_f
 gboolean send_ptz_relative_move_by_pixel_offset(int x, int y, int speed);
 gboolean send_ptz_area_move(int x1, int y1, int x2, int y2, int speed);
 gboolean send_ptz_area_move_with_response(int x1, int y1, int x2, int y2, int speed);
+void clear_ptz_preset_memory(int index, int auto_mode);
+void sync_auto_ptz_list_from_setting(void);
 
 // 전역 변수
 extern int ptz_err_code;

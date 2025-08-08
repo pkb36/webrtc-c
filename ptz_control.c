@@ -339,6 +339,13 @@ int move_ptz_pos(int index, int auto_ptz_move)
     return -1;
   }
 
+  if (auto_ptz_move && ptz_watchdog_timer != 0)
+  {
+    g_source_remove(ptz_watchdog_timer);
+    ptz_watchdog_timer = 0;
+    g_move_speed = 0;  // 워치독 관련 변수 초기화
+  }
+
   unsigned char *preset_data = auto_ptz_move ? &AUTO_PTZ_POS_LIST[index][1] : &PTZ_POS_LIST[index][1];
 
   int is_set_berfore = auto_ptz_move ? AUTO_PTZ_POS_LIST[index][0] : PTZ_POS_LIST[index][0];
@@ -485,7 +492,7 @@ int is_zoom_out(int prev, int cur)
 // LJH, zoom first is default operation of RGB camera when doing auto ptz
 void *process_auto_move_ptz(void *arg)
 {
-  static int index = 0, prev_index = 0;
+  int index = 0, prev_index = 0;
   int sleep_100ms_cnt = AUTO_PTZ_MOVE_SEQ[1] * 10;
   int max_index = AUTO_PTZ_MOVE_SEQ[2];
   unsigned int cur_zoom_val = 0, prev_zoom_val = 0;
@@ -495,6 +502,7 @@ void *process_auto_move_ptz(void *arg)
   {
     if(g_cow_tracking_state.is_tracking)
     {
+      usleep(100000);
       continue;
     }
     // 줌 처리 로직 (기존과 동일)
@@ -628,6 +636,8 @@ int auto_move_ptz(const char *move_seq)
       return -1;
     }
   }
+
+  memset(AUTO_PTZ_MOVE_SEQ, 0, sizeof(AUTO_PTZ_MOVE_SEQ));
 
   // 기존 전역 변수 설정 (호환성)
   AUTO_PTZ_MOVE_SEQ[0] = 1;
@@ -1679,3 +1689,39 @@ gboolean send_ptz_area_move_with_response(int x1, int y1, int x2, int y2, int sp
     return FALSE;
 }
 
+void clear_ptz_preset_memory(int index, int auto_mode)
+{
+    if (index >= MAX_PTZ_PRESET)
+    {
+        glog_error("Invalid preset index: %d\n", index);
+        return;
+    }
+    
+    if (auto_mode)
+    {
+        // Auto PTZ 프리셋 메모리 초기화
+        memset(AUTO_PTZ_POS_LIST[index], 0, PTZ_POS_SIZE);
+        glog_trace("Cleared AUTO_PTZ_POS_LIST[%d] from memory\n", index);
+    }
+    else
+    {
+        // Manual PTZ 프리셋 메모리 초기화
+        memset(PTZ_POS_LIST[index], 0, PTZ_POS_SIZE);
+        glog_trace("Cleared PTZ_POS_LIST[%d] from memory\n", index);
+    }
+}
+
+void sync_auto_ptz_list_from_setting(void)
+{
+    // g_setting.auto_ptz_preset을 AUTO_PTZ_POS_LIST로 복사
+    for (int i = 0; i < MAX_PTZ_PRESET; i++)
+    {
+        memcpy(AUTO_PTZ_POS_LIST[i], g_setting.auto_ptz_preset[i], PTZ_POS_SIZE);
+        
+        if (AUTO_PTZ_POS_LIST[i][0])
+        {
+            glog_trace("Synced Auto PTZ Preset[%d]: enabled\n", i);
+        }
+    }
+    glog_trace("AUTO_PTZ_POS_LIST synchronized with g_setting\n");
+}

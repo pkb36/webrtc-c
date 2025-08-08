@@ -287,28 +287,16 @@ gboolean send_event_to_recorder_simple(int class_id, int camera_id)
 
 int send_notification_to_server(int class_id)
 {
-	int cam_idx = RGB_CAM;
-
 	glog_trace("try sending class_id=%d, enable_event_notify=%d\n", class_id, g_setting.enable_event_notify);
 
 	if (g_setting.enable_event_notify)
 	{
-		// position 체크 제거 - 항상 이 경로로만 실행됨
-		cam_idx = g_noti_cam_idx;
-		glog_trace("g_noti_cam_idx=%d,g_source_cam_idx=%d\n", g_noti_cam_idx, g_source_cam_idx);
-
-		if (g_noti_cam_idx != g_source_cam_idx)
-		{
-			glog_trace("g_noti_cam_idx=%d and g_source_cam_idx=%d are different, so return\n", g_noti_cam_idx, g_source_cam_idx);
-			return FALSE;
-		}
-
 		g_event_recording = 1;
 		g_timeout_add_seconds(30, event_recording_timeout, NULL);
 
-		if (send_event_to_recorder_simple(class_id, cam_idx) == TRUE)
+		if (send_event_to_recorder_simple(class_id, g_noti_cam_idx) == TRUE)
 		{
-			glog_trace("send_event_to_recorder_simple cam_idx=%d,class_id=%d\n", cam_idx, class_id);
+			glog_trace("send_event_to_recorder_simple cam_idx=%d,class_id=%d\n", g_noti_cam_idx, class_id);
 			return TRUE;
 		}
 	}
