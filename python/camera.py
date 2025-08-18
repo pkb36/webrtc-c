@@ -52,7 +52,7 @@ class CameraRecorder:
         self.base_output_dir = Path(output_dir)
         self.test_file = test_file
         self.recording_enabled = camera_config.get("recording_enabled", True)
-        
+
         current_date = datetime.now().strftime("RECORD_%Y%m%d")
         self.output_dir = self.base_output_dir / current_date
         # self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,19 @@ class CameraRecorder:
         self.fragment_count = 0
         self.use_fallback = False  # fallback 모드 여부
         self.test_pattern = False  # 테스트 패턴 사용 여부
-        
+
+    def is_writable(self, path=None):
+        """실시간 쓰기 가능 여부 체크"""
+        test_path = path or self.base_output_dir
+        try:
+            # 실제 파일 생성 테스트
+            test_file = test_path / f'.write_test_{os.getpid()}'
+            test_file.touch()
+            test_file.unlink()
+            return True
+        except (OSError, PermissionError):
+            return False
+    
     def set_restart_callback(self, callback):
         """재시작 콜백 설정"""
         self.restart_callback = callback
@@ -209,31 +221,32 @@ class CameraRecorder:
         current_date = current_time.strftime("RECORD_%Y%m%d")
         output_dir = self.base_output_dir / current_date
         
+        if not self.is_writable(self.base_output_dir):
+            logger.warning(f"파일시스템 RO 상태 - /tmp 사용")
+            # /tmp는 보통 tmpfs로 메모리에 있어 항상 쓰기 가능
+            return f"/tmp/cam_{self.config['device_id']}_{fragment_id}.mp4"
+        
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            logger.error(f"디렉토리 생성 실패: {output_dir} - {e}")
-            self.recording_enabled = False  # 녹화 비활성화
-            return "dummy.mp4"
-        
-        # 카메라 ID 결정
-        cam_id = 0 if self.config['device_id'] == 0 else 1
-        
-        # 파일명 생성
-        filename = current_time.strftime(f"CAM{cam_id}_%H%M%S.mp4")
-        # filename = current_time.strftime(f"CAM{cam_id}_%Y%m%d_%H%M%S.mp4")
-        full_path = str(output_dir / filename)
-        
-        # 프레임 수신 시간 업데이트 (파일이 생성된다는 것은 데이터가 들어온다는 의미)
-        self.last_frame_time = current_time
-        
-        # 로그
-        if fragment_id == 0:
-            logger.info(f"{self.config['name']}: 녹화 시작 - {full_path}")
-        else:
-            logger.info(f"{self.config['name']}: 새 파일 생성 - {full_path} (fragment {fragment_id})")
-        
-        return full_path
+            cam_id = 0 if self.config['device_id'] == 0 else 1
+            filename = current_time.strftime(f"CAM{cam_id}_%H%M%S.mp4")
+            full_path = str(output_dir / filename)
+            
+            logger.info(f"새 파일: {full_path}")
+
+            # 프레임 수신 시간 업데이트 (파일이 생성된다는 것은 데이터가 들어온다는 의미)
+            self.last_frame_time = current_time
+            
+            # 로그
+            if fragment_id == 0:
+                logger.info(f"{self.config['name']}: 녹화 시작 - {full_path}")
+            else:
+                logger.info(f"{self.config['name']}: 새 파일 생성 - {full_path} (fragment {fragment_id})")
+            return full_path
+            
+        except Exception as e:
+            logger.error(f"파일 생성 실패: {e}")
+            return f"/tmp/fallback_{fragment_id}.mp4"
 
     def on_frame_probe(self, pad, info, user_data):
         """프레임 프로브 콜백 - 프레임 수신 모니터링용"""
