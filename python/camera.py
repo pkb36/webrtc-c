@@ -461,13 +461,91 @@ class CameraRecorder:
             logger.debug(f"카메라 체크 실패: {e}")
             
         return False
+    
+    def switch_from_fallback_to_camera(self):
+        """Fallback 모드에서 실제 카메라로 복귀"""
+        logger.info(f"{self.config['name']}: 실제 카메라로 복귀 시도")
+        
+        try:
+            # 1. 현재 fallback 파이프라인 정지
+            if self.pipeline:
+                self.pipeline.send_event(Gst.Event.new_eos())
+                self.pipeline.get_state(2 * Gst.SECOND)
+                self.pipeline.set_state(Gst.State.NULL)
+                time.sleep(1)
+            
+            # 2. fallback 플래그 해제
+            self.use_fallback = False
+            self.test_pattern = False
+            
+            # 3. 실제 카메라로 새 파이프라인 생성
+            self.create_pipeline()
+            
+            # 4. 파이프라인 시작 시도
+            ret = self.pipeline.set_state(Gst.State.PLAYING)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                logger.warning(f"{self.config['name']}: 카메라 복귀 실패 - Fallback 유지")
+                
+                # 다시 fallback으로 돌아가기
+                self.pipeline.set_state(Gst.State.NULL)
+                self.use_fallback = True
+                self.create_pipeline()
+                
+                ret = self.pipeline.set_state(Gst.State.PLAYING)
+                if ret == Gst.StateChangeReturn.FAILURE:
+                    logger.error(f"{self.config['name']}: Fallback 재시작도 실패")
+                    return False
+                
+                return False
+            
+            # 5. 상태 변경 확인
+            ret, state, pending = self.pipeline.get_state(5 * Gst.SECOND)
+            if ret != Gst.StateChangeReturn.SUCCESS:
+                logger.warning(f"{self.config['name']}: 카메라 상태 변경 실패 - Fallback 유지")
+                
+                # 다시 fallback으로
+                self.pipeline.set_state(Gst.State.NULL)
+                self.use_fallback = True
+                self.create_pipeline()
+                self.pipeline.set_state(Gst.State.PLAYING)
+                
+                return False
+            
+            # 6. 성공
+            self.last_frame_time = datetime.now()
+            logger.info(f"{self.config['name']}: 실제 카메라로 복귀 성공")
+            return True
+            
+        except Exception as e:
+            logger.error(f"{self.config['name']}: 카메라 복귀 중 에러 - {e}")
+            
+            # 에러 발생 시 fallback 유지
+            if not self.use_fallback:
+                self.use_fallback = True
+                try:
+                    self.create_pipeline()
+                    self.pipeline.set_state(Gst.State.PLAYING)
+                except:
+                    pass
+                    
+            return False
             
     def watchdog_thread_func(self):
         """프레임 수신 모니터링 스레드"""
         logger.info(f"{self.config['name']}: 워치독 스레드 시작")
+
+        recovery_check_interval = 30
+        last_recovery_check = datetime.now()
         
         while self.watchdog_running:
             try:
+                if self.use_fallback:
+                    if (datetime.now() - last_recovery_check).total_seconds() > recovery_check_interval:
+                        if self.check_camera_recovery():
+                            logger.info(f"{self.config['name']}: 카메라 복구 감지 - 전환 시도")
+                            self.switch_from_fallback_to_camera()
+                        last_recovery_check = datetime.now()
+
                 # 마지막 프레임 시간 확인
                 if self.last_frame_time:
                     time_since_last_frame = (datetime.now() - self.last_frame_time).total_seconds()
@@ -560,20 +638,61 @@ class CameraRecorder:
     def start(self):
         """녹화 시작"""
         logger.info(f"{self.config['name']} 녹화 시작")
-        self.create_pipeline()
         
-        # 파이프라인 상태 변경 및 확인
-        ret = self.pipeline.set_state(Gst.State.PLAYING)
-        if ret == Gst.StateChangeReturn.FAILURE:
-            logger.error(f"{self.config['name']}: 파이프라인 시작 실패")
-            return False
+        # 실제 카메라로 첫 시도
+        if not self.use_fallback:
+            self.create_pipeline()
+            ret = self.pipeline.set_state(Gst.State.PLAYING)
             
-        # 상태 변경 대기
-        ret, state, pending = self.pipeline.get_state(5 * Gst.SECOND)
-        if ret != Gst.StateChangeReturn.SUCCESS:
-            logger.error(f"{self.config['name']}: 파이프라인 상태 변경 실패")
-            return False
+            if ret == Gst.StateChangeReturn.FAILURE:
+                logger.warning(f"{self.config['name']}: 실제 카메라 파이프라인 실패 - Fallback 전환")
+                
+                # 기존 파이프라인 정리
+                self.pipeline.set_state(Gst.State.NULL)
+                self.pipeline = None
+                
+                # Fallback 모드로 전환
+                self.use_fallback = True
+                self.create_pipeline()  # Fallback 소스로 새 파이프라인 생성
+                
+                ret = self.pipeline.set_state(Gst.State.PLAYING)
+                if ret == Gst.StateChangeReturn.FAILURE:
+                    logger.error(f"{self.config['name']}: Fallback도 실패 - 포기")
+                    return False
+                else:
+                    logger.info(f"{self.config['name']}: Fallback 모드로 전환 성공")
             
+            # 상태 변경 대기
+            ret, state, pending = self.pipeline.get_state(5 * Gst.SECOND)
+            if ret != Gst.StateChangeReturn.SUCCESS:
+                if not self.use_fallback:
+                    logger.warning(f"{self.config['name']}: 상태 변경 실패 - Fallback 재시도")
+                    
+                    # Fallback으로 재시도
+                    self.pipeline.set_state(Gst.State.NULL)
+                    self.use_fallback = True
+                    self.create_pipeline()
+                    
+                    ret = self.pipeline.set_state(Gst.State.PLAYING)
+                    if ret == Gst.StateChangeReturn.FAILURE:
+                        logger.error(f"{self.config['name']}: Fallback도 실패")
+                        return False
+                        
+                    ret, state, pending = self.pipeline.get_state(5 * Gst.SECOND)
+                    if ret != Gst.StateChangeReturn.SUCCESS:
+                        logger.error(f"{self.config['name']}: Fallback 상태 변경도 실패")
+                        return False
+                else:
+                    logger.error(f"{self.config['name']}: 파이프라인 상태 변경 실패")
+                    return False
+        else:
+            # 이미 Fallback 모드인 경우
+            self.create_pipeline()
+            ret = self.pipeline.set_state(Gst.State.PLAYING)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                logger.error(f"{self.config['name']}: Fallback 파이프라인 시작 실패")
+                return False
+        
         # 프레임 수신 시간 초기화
         self.last_frame_time = datetime.now()
         
@@ -583,7 +702,7 @@ class CameraRecorder:
         self.watchdog_thread.daemon = True
         self.watchdog_thread.start()
         
-        logger.info(f"{self.config['name']}: 파이프라인 시작 성공")
+        logger.info(f"{self.config['name']}: 파이프라인 시작 성공 (Fallback: {self.use_fallback})")
         return True
         
     def stop(self):
