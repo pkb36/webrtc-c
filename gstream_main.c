@@ -705,19 +705,18 @@ static gpointer check_ip_on_close_thread(gpointer data)
     char line[256];
     
     if (get_service_address(line) != 1) {
-        glog_trace("update_http_service_ip (async)\n");
-        update_http_service_ip(&g_config);
+        update_http_service_ip(&g_config, TRUE); 
     }
     else {
         // get_global_ip_with_timeout 사용
-        char *global_ip = get_global_ip_with_timeout();
+        char *global_ip = get_global_ip_robust(); // 개선된 함수 사용
         char *ip_address = extract_ip(line);
 
         if (global_ip) {
             if (strcmp(global_ip, ip_address) != 0) {
                 glog_trace("global_ip=%s, ip_address=%s, update_http_service_ip (async)\n", 
                           global_ip, ip_address);
-                update_http_service_ip(&g_config);
+                update_http_service_ip(&g_config, TRUE);
             }
             free(global_ip);
         }
@@ -1020,7 +1019,6 @@ static gboolean handle_keyboard(GIOChannel *source, GIOCondition cond, gpointer 
 
     case 'i':
         printf("key press i, ip_search \n");
-        update_http_service_ip(&g_config);
         break;
 
     case 't':
@@ -1397,6 +1395,8 @@ int main(int argc, char *argv[])
         glog_error("fail load config : %s\n", g_config_name);
         return -1;
     }
+
+    update_http_service_ip(&g_config, FALSE); 
 
     DeviceSetting default_setting;
     ensure_valid_settings_file(g_config.device_setting_path, &default_setting);

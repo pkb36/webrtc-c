@@ -451,7 +451,7 @@ void set_person_obj_state(PersonObj object[], NvDsObjectMeta *obj_meta)
       obj_meta->rect_params.border_color.blue = 0.0;
       obj_meta->rect_params.border_color.alpha = 1;
     }
-    // print_debug(obj_meta);
+    
     if (object_state == PRE_INIT_STATE) {
     // if (object_state == -1) {
       obj_meta->rect_params.border_color.red = 0.0;

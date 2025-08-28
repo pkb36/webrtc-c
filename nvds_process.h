@@ -31,12 +31,12 @@
 #define THRESHOLD_NORMAL                      (0.2)
 #define HEAT_COUNT_THRESHOLD                  1
 
-#define CLASSES_NUM                           5
+#define EVENT_DURATION_THRESHOLD_SECONDS      15
+#define EVENT_RECORDING_TIMEOUT_SECONDS       30
+#define TRACKING_MAX_DURATION_SECONDS         300
+#define TRACKING_TIMER_INTERVAL_MS            4000
 
-// TCP 통신 관련 정의
-#define API_SERVER_PORT 8888
-#define EVENT_TCP_PORT 9999
-#define TCP_BUFFER_SIZE 4096
+#define CLASSES_NUM                           5
 
 #if CLASSES_NUM == 5
 enum 
@@ -111,10 +111,12 @@ typedef struct {
   int opt_flow_check_count;
   int bbox_temp;
   int temp_duration;
-  int opt_flow_detected_count;
   AvgCalculator temp_avg_calculator; // Embedded temp AvgCalculator structure for each object
   int heat_count;
   int temp_event_time_gap;
+
+  int opt_flow_sustained_count;     // 1단계: 옵티컬 플로우 움직임 지속 시간(초) 카운터
+  int motion_is_widespread;         // 2단계: 움직임이 공간적으로 유의미한지 여부 (Flag)
 } ObjMonitor;
 
 
@@ -203,7 +205,7 @@ void set_custom_label(NvDsObjectMeta *obj_meta, NvDsFrameMeta *frame_meta,
 gboolean send_event_to_recorder_simple(int class_id, int camera_id);
 
 BboxColor get_object_color(guint camera_id, guint object_id, gint class_id);
-int send_notification_to_server(int class_id);
+int send_notification_to_server(int class_id, int camera_id);
 void process_fever_detection(int cam_idx);
 void calculate_herd_temperature_stats(HerdTempStats *stats);
 

@@ -31,27 +31,29 @@
 #include "circular_buffer.h"
 #include "ptz_control.h"
 #include "serial_comm.h"
+#include "thread_safe_queue.h"
 
 static int *g_cam_indices = NULL;
 #define MAX_OPT_FLOW_ITERATIONS 1000
 #define MAX_DETECTION_BUFFER_SIZE 10000 // 최대 10000 프레임
 #define BUFFER_DURATION_SEC 120			// 120초 버퍼
 
+#define FLIP_MOTION_SUSTAINED_SECONDS         4   // 1단계: 최소 4초간 지속적인 움직임이 있어야 함
+#define FLIP_MOTION_GRID_ROWS                 4   // 2단계: 공간 분석을 위한 4x4 격자
+#define FLIP_MOTION_GRID_COLS                 4
+#define FLIP_MOTION_DISTRIBUTION_THRESHOLD    0.3 // 2단계: 전체 격자의 30% 이상에서 움직임이 감지되어야 함
+
 CowTrackingState g_cow_tracking_state = {0};
+ObjMonitor obj_info[NUM_CAMS][NUM_OBJS];
+int g_frame_count[NUM_CAMS];
+int g_event_recording = 0;
 
 int g_cam_index = 0;
-int g_noti_cam_idx = 0;
 int g_top = 0, g_left = 0, g_width = 0, g_height = 0;
 int g_move_to_center_running = 0;
-int g_frame_count[2];
+
+static ThreadSafeQueue g_event_queue;
 static pthread_t g_tid;
-int g_event_class_id = CLASS_NORMAL_COW;
-int g_event_recording = 0;
-#if 0
-Timer timers[MAX_PTZ_PRESET];
-#endif
-static int g_event_sender_running = 1;
-ObjMonitor obj_info[NUM_CAMS][NUM_OBJS];
 
 typedef struct
 {
@@ -83,28 +85,28 @@ float threshold_confidence[NUM_CLASSES] =
 
 void *event_sender_thread(void *arg)
 {
-	while (g_event_sender_running)
-	{
-		if (g_event_class_id != CLASS_NORMAL_COW && g_event_class_id != EVENT_EXIT)
-		{
-			int class_id = g_event_class_id;
-			g_event_class_id = CLASS_NORMAL_COW; // 초기화
+	while (1)
+    {
+        // 큐에서 이벤트 메시지를 꺼냄 (메시지가 없으면 여기서 대기)
+        EventMessage msg = queue_dequeue(&g_event_queue);
 
-			int ret = send_notification_to_server(class_id);
-			if (ret < 1)
-			{
-				glog_error("Failed to send event notification to server for class %d\n", class_id);
-			}
-			else
-			{
-				glog_info("Event notification sent successfully for class %d\n", class_id);
-			}
-		}
+        // 종료 메시지를 받으면 루프 탈출
+        if (msg.class_id == EVENT_EXIT) {
+            break;
+        }
 
-		usleep(100000); // 100ms 대기
-	}
-
-	return NULL;
+        // 유효한 이벤트 처리
+        int ret = send_notification_to_server(msg.class_id, msg.camera_id);
+        if (ret < 1)
+        {
+            glog_error("Failed to send event notification to server for class %d\n", msg.class_id);
+        }
+        else
+        {
+            glog_info("Event notification sent successfully for class %d from cam %d\n", msg.class_id, msg.camera_id);
+        }
+    }
+    return NULL;
 }
 
 static gboolean event_recording_timeout(gpointer data)
@@ -168,12 +170,15 @@ BboxColor get_object_color(guint camera_id, guint object_id, gint class_id)
 		return BBOX_YELLOW;
 
 	case CLASS_FLIP_COW:
-		if (g_setting.opt_flow_apply &&
-			obj_info[camera_id][object_id].opt_flow_detected_count > 0)
-		{
+		if (obj_info[camera_id][object_id].opt_flow_sustained_count > 0) {
 			return BBOX_RED;
 		}
-		return BBOX_YELLOW;
+		else if (obj_info[camera_id][object_id].duration > 0) {
+			return BBOX_YELLOW;
+		}
+		else {
+			return BBOX_YELLOW;
+		}
 
 	case CLASS_LABOR_SIGN_COW:
 		return BBOX_RED;
@@ -285,23 +290,22 @@ gboolean send_event_to_recorder_simple(int class_id, int camera_id)
 	return TRUE;
 }
 
-int send_notification_to_server(int class_id)
+int send_notification_to_server(int class_id, int camera_id)
 {
-	glog_trace("try sending class_id=%d, enable_event_notify=%d\n", class_id, g_setting.enable_event_notify);
+    glog_trace("try sending class_id=%d, camera_id=%d, enable_event_notify=%d\n", class_id, camera_id, g_setting.enable_event_notify);
 
-	if (g_setting.enable_event_notify)
-	{
-		g_event_recording = 1;
-		g_timeout_add_seconds(30, event_recording_timeout, NULL);
+    if (g_setting.enable_event_notify)
+    {
+        g_event_recording = 1;
+        g_timeout_add_seconds(30, event_recording_timeout, NULL);
 
-		if (send_event_to_recorder_simple(class_id, g_noti_cam_idx) == TRUE)
-		{
-			glog_trace("send_event_to_recorder_simple cam_idx=%d,class_id=%d\n", g_noti_cam_idx, class_id);
-			return TRUE;
-		}
-	}
-
-	return FALSE;
+        if (send_event_to_recorder_simple(class_id, camera_id) == TRUE)
+        {
+            glog_trace("send_event_to_recorder_simple cam_idx=%d,class_id=%d\n", camera_id, class_id);
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 void gather_event(int class_id, int obj_id, int cam_idx)
@@ -327,7 +331,6 @@ void init_opt_flow(int cam_idx, int obj_id, int is_total)
 	obj_info[cam_idx][obj_id].do_opt_flow = 0;
 	if (is_total)
 	{
-		obj_info[cam_idx][obj_id].opt_flow_detected_count = 0;
 		obj_info[cam_idx][obj_id].prev_x = 0;
 		obj_info[cam_idx][obj_id].prev_y = 0;
 		obj_info[cam_idx][obj_id].prev_width = 0;
@@ -351,93 +354,124 @@ void check_heat_count(int cam_idx, int obj_id)
 }
 #endif
 
+// nvds_process.c 파일
+
 void check_events_for_notification(int cam_idx, int init)
 {
-	if (init)
-	{
-		for (int i = 0; i < NUM_CAMS; i++)
-		{
-			for (int j = 0; j < NUM_OBJS; j++)
-			{
-				obj_info[i][j].detected_frame_count = 0;
-				obj_info[i][j].duration = 0;
-				obj_info[i][j].temp_duration = 0;
-				obj_info[i][j].class_id = CLASS_NORMAL_COW;
+    if (init)
+    {
+        for (int i = 0; i < NUM_CAMS; i++)
+        {
+            for (int j = 0; j < NUM_OBJS; j++)
+            {
+                obj_info[i][j].detected_frame_count = 0;
+                obj_info[i][j].duration = 0;
+                obj_info[i][j].temp_duration = 0;
+                obj_info[i][j].class_id = CLASS_NORMAL_COW;
 #if RESNET_50
-				obj_info[i][j].heat_count = 0;
+                obj_info[i][j].heat_count = 0;
 #endif
-				init_opt_flow(i, j, 1);
-			}
-		}
-		return;
-	}
+                init_opt_flow(i, j, 1);
+                obj_info[i][j].opt_flow_sustained_count = 0;
+                obj_info[i][j].motion_is_widespread = 0;
+            }
+        }
+        return;
+    }
 
-	for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
-	{
-		if (obj_info[cam_idx][obj_id].detected_frame_count >= (PER_CAM_SEC_FRAME - 1))
-		{ // if detection continued one second
-			// glog_trace("cam_idx=%d, obj_id=%d detected_frame_count=%d duration=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].detected_frame_count, obj_info[cam_idx][obj_id].duration);
-			obj_info[cam_idx][obj_id].duration++;
-			if (obj_info[cam_idx][obj_id].duration >= threshold_event_duration[obj_info[cam_idx][obj_id].class_id])
-			{ // if duration lasted more than designated time
-				obj_info[cam_idx][obj_id].duration = 0;
-				// check_for_zoomin(g_total_rect_size, detect_count);      //LJH, in progress
-				obj_info[cam_idx][obj_id].notification_flag = 1; // send notification later
+    for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
+    {
+        if (obj_info[cam_idx][obj_id].detected_frame_count >= (PER_CAM_SEC_FRAME - 1))
+        {
+            obj_info[cam_idx][obj_id].duration++;
 
-				if ((obj_info[cam_idx][obj_id].class_id == CLASS_FLIP_COW ||
-					 obj_info[cam_idx][obj_id].class_id == CLASS_LABOR_SIGN_COW) &&
-					cam_idx == RGB_CAM)
-				{
-					printf("Starting cow tracking for obj_id=%d, class_id=%d\n", obj_id, obj_info[cam_idx][obj_id].class_id);
+            // --- '뒤집힘' 이벤트에 대한 특별 처리 로직 ---
+            if (obj_info[cam_idx][obj_id].class_id == CLASS_FLIP_COW) 
+            {
+                if (obj_info[cam_idx][obj_id].motion_is_widespread == 1) {
+                    obj_info[cam_idx][obj_id].opt_flow_sustained_count++;
+                    glog_trace("[%d][%d] Flipped motion sustained for %d seconds\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].opt_flow_sustained_count);
+                } else {
+                    obj_info[cam_idx][obj_id].opt_flow_sustained_count = 0;
+                }
 
-					start_cow_tracking(
-						obj_id,
-						obj_info[cam_idx][obj_id].class_id,
-						obj_info[cam_idx][obj_id].x,
-						obj_info[cam_idx][obj_id].y,
-						obj_info[cam_idx][obj_id].width,
-						obj_info[cam_idx][obj_id].height);
-				}
+                if (obj_info[cam_idx][obj_id].duration >= threshold_event_duration[CLASS_FLIP_COW] &&
+                    obj_info[cam_idx][obj_id].opt_flow_sustained_count >= FLIP_MOTION_SUSTAINED_SECONDS)
+                {
+                    glog_info(">>> REAL FLIP EVENT DETECTED for obj %d <<<\n", obj_id);
+                    obj_info[cam_idx][obj_id].notification_flag = 1;
+                    
+                    obj_info[cam_idx][obj_id].duration = 0;
+                    obj_info[cam_idx][obj_id].opt_flow_sustained_count = 0;
 
+                    // --- 수정된 부분 (a) ---
+                    // PTZ 추적 시작 (실제 객체 정보 전달)
+                    if (cam_idx == RGB_CAM) {
+                         start_cow_tracking(
+                            obj_id,
+                            obj_info[cam_idx][obj_id].class_id,
+                            obj_info[cam_idx][obj_id].x,
+                            obj_info[cam_idx][obj_id].y,
+                            obj_info[cam_idx][obj_id].width,
+                            obj_info[cam_idx][obj_id].height);
+                    }
+                }
+            } 
+            // --- '뒤집힘'이 아닌 다른 이벤트들 처리 ---
+            else 
+            {
+                if (obj_info[cam_idx][obj_id].duration >= threshold_event_duration[obj_info[cam_idx][obj_id].class_id])
+                {
+                    obj_info[cam_idx][obj_id].duration = 0;
+                    obj_info[cam_idx][obj_id].notification_flag = 1;
+
+                    // --- 수정된 부분 (b) ---
+                    // PTZ 추적 조건에서 CLASS_FLIP_COW 제거
+                    if (obj_info[cam_idx][obj_id].class_id == CLASS_LABOR_SIGN_COW && cam_idx == RGB_CAM)
+                    {
+                        printf("Starting cow tracking for obj_id=%d, class_id=%d\n", obj_id, obj_info[cam_idx][obj_id].class_id);
+                        start_cow_tracking(
+                            obj_id,
+                            obj_info[cam_idx][obj_id].class_id,
+                            obj_info[cam_idx][obj_id].x,
+                            obj_info[cam_idx][obj_id].y,
+                            obj_info[cam_idx][obj_id].width,
+                            obj_info[cam_idx][obj_id].height);
+                    }
 #if RESNET_50
-				if (g_setting.resnet50_apply)
-				{
-					if (obj_info[cam_idx][obj_id].class_id == CLASS_HEAT_COW)
-					{
-						check_heat_count(cam_idx, obj_id); // LJH, if heat count is zero, notification is cancelled
-					}
-				}
+                    if (g_setting.resnet50_apply)
+                    {
+                        if (obj_info[cam_idx][obj_id].class_id == CLASS_HEAT_COW)
+                        {
+                            check_heat_count(cam_idx, obj_id);
+                        }
+                    }
 #endif
-				glog_debug("[%d][%d].class_id=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].class_id);
-			}
+                    glog_debug("[%d][%d].class_id=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].class_id);
+                }
+            }
 
-			if (g_setting.opt_flow_apply)
-			{
-				if (obj_info[cam_idx][obj_id].class_id == CLASS_FLIP_COW)
-				{											   // if event was flip do optical flow analysis
-					obj_info[cam_idx][obj_id].do_opt_flow = 1; // if detected frame count lasted equal or more than one second then do optical flow analysis
-				}
-				else
-				{
-					init_opt_flow(cam_idx, obj_id, 0);
-				}
-			}
-		}
-		else
-		{ // if detection not continued for one second
-			obj_info[cam_idx][obj_id].duration = 0;
-			init_opt_flow(cam_idx, obj_id, 1);
-		}
-		obj_info[cam_idx][obj_id].detected_frame_count = 0;
-	}
-}
-
-int get_opt_flow_result(int cam_idx, int obj_id)
-{
-	glog_debug("[%d][%d].confi=%.2f opt_flow_detected_count ==> %d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].confidence, obj_info[cam_idx][obj_id].opt_flow_detected_count);
-	if (obj_info[cam_idx][obj_id].opt_flow_detected_count >= THRESHOLD_OVER_OPTICAL_FLOW_COUNT)
-		return 1;
-	return 0;
+            // 옵티컬 플로우 실행 여부 결정 (이 로직은 그대로 유지)
+            if (g_setting.opt_flow_apply)
+            {
+                if (obj_info[cam_idx][obj_id].class_id == CLASS_FLIP_COW)
+                {
+                    obj_info[cam_idx][obj_id].do_opt_flow = 1;
+                }
+                else
+                {
+                    init_opt_flow(cam_idx, obj_id, 0);
+                }
+            }
+        }
+        else
+        {
+            obj_info[cam_idx][obj_id].duration = 0;
+            obj_info[cam_idx][obj_id].opt_flow_sustained_count = 0;
+            init_opt_flow(cam_idx, obj_id, 1);
+        }
+        obj_info[cam_idx][obj_id].detected_frame_count = 0;
+    }
 }
 
 #if 0
@@ -466,31 +500,19 @@ int get_time_gap_result(int preset)               //need to apply to objects
 void trigger_notification(int cam_idx)
 {
 	for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
-	{
-		if (obj_info[cam_idx][obj_id].notification_flag)
-		{
-			obj_info[cam_idx][obj_id].notification_flag = 0;
-			g_event_class_id = obj_info[cam_idx][obj_id].class_id;
-			glog_trace("[15SEC] notification_flag==1,cam_idx=%d,obj_id=%d,g_event_class_id=%d,g_preset_index=%d\n", cam_idx, obj_id, g_event_class_id, g_preset_index);
-#if OPTICAL_FLOW_INCLUDE
-			if (g_setting.opt_flow_apply)
-			{
-				if (g_event_class_id == CLASS_FLIP_COW)
-				{
-					glog_trace("[15SEC] g_event_class_id==CLASS_FLIP_COW\n");
-					if (get_opt_flow_result(cam_idx, obj_id) == 0)
-					{
-						glog_trace("[15SEC] get_opt_flow_result(cam_idx=%d,obj_id=%d) ==> 0\n", cam_idx, obj_id);
-						init_opt_flow(cam_idx, obj_id, 1);
-						continue;
-					}
-					init_opt_flow(cam_idx, obj_id, 1);
-					glog_trace("[15SEC] get_opt_flow_result(cam_idx=%d,obj_id=%d) ==> 1\n", cam_idx, obj_id);
-				}
-			}
-#endif
-			g_noti_cam_idx = g_cam_index;
-			glog_trace("[[[NOTIFICATION]]] [%d][%d].confi=%.2f,g_source_cam_idx=%d,g_noti_cam_idx=%d,g_event_class_id=%d \n", cam_idx, obj_id, obj_info[cam_idx][obj_id].confidence, g_source_cam_idx, g_noti_cam_idx, g_event_class_id);
+    {
+        if (obj_info[cam_idx][obj_id].notification_flag)
+        {
+			int current_class_id = obj_info[cam_idx][obj_id].class_id;
+
+            obj_info[cam_idx][obj_id].notification_flag = 0;
+
+			EventMessage msg;
+            msg.class_id = current_class_id;
+            msg.camera_id = cam_idx;
+            queue_enqueue(&g_event_queue, msg);
+            glog_trace("[[[NOTIFICATION ENQUEUED]]] cam_idx=%d, class_id=%d\n", msg.camera_id, msg.class_id);
+
 			obj_info[cam_idx][obj_id].temp_event_time_gap = TEMP_EVENT_TIME_GAP;
 		}
 	}
@@ -576,7 +598,7 @@ int get_flip_color_over_threshold(int cam_idx, int obj_id)
 {
 	if (g_setting.opt_flow_apply)
 	{
-		if (obj_info[cam_idx][obj_id].opt_flow_detected_count > 0)
+		if (obj_info[cam_idx][obj_id].opt_flow_sustained_count > 0)
 		{
 			return RED_COLOR;
 		}
@@ -602,151 +624,89 @@ int get_heat_color_over_threshold(int cam_idx, int obj_id)
 
 void process_opt_flow(NvDsFrameMeta *frame_meta, int cam_idx, int obj_id, int cam_sec_interval)
 {
-	if (obj_id < 0)
-		return;
+    if (obj_id < 0)
+        return;
 
-	int count = 0;
-	double move_size = 0.0, move_size_total = 0.0, move_size_avg = 0.0;
-	double diagonal = 0;
-	int row_start = 0, col_start = 0, row_num = 0, col_num = 0;
-	int rows = 0, cols = 0; // rows 추가
-	int corr_value = 0;
-	int bbox_move = 0, rect_size_change = 0;
+    // 함수 시작 시 플래그 초기화
+    obj_info[cam_idx][obj_id].motion_is_widespread = 0;
 
-	// glog_trace("[process_opt_flow] START - cam_idx=%d, obj_id=%d\n", cam_idx, obj_id);
+    // 필요한 변수만 남김
+    double diagonal = 0;
+    int rows = 0, cols = 0;
 
-	for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next)
-	{
-		NvDsUserMeta *user_meta = (NvDsUserMeta *)(l_user->data);
+    for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next)
+    {
+        NvDsUserMeta *user_meta = (NvDsUserMeta *)(l_user->data);
 
-		if (user_meta->base_meta.meta_type == NVDS_OPTICAL_FLOW_META)
-		{
-			// glog_trace("[process_opt_flow] Found optical flow metadata\n");
+        if (user_meta->base_meta.meta_type == NVDS_OPTICAL_FLOW_META)
+        {
+            NvDsOpticalFlowMeta *opt_flow_meta = (NvDsOpticalFlowMeta *)(user_meta->user_meta_data);
+            if (!opt_flow_meta || !opt_flow_meta->data)
+            {
+                glog_error("[process_opt_flow] ERROR: NULL metadata!\n");
+                continue;
+            }
 
-			NvDsOpticalFlowMeta *opt_flow_meta = (NvDsOpticalFlowMeta *)(user_meta->user_meta_data);
+            rows = opt_flow_meta->rows;
+            cols = opt_flow_meta->cols;
+            NvOFFlowVector *flow_vectors = (NvOFFlowVector *)(opt_flow_meta->data);
+            diagonal = obj_info[cam_idx][obj_id].diagonal; // diagonal 값 가져오기
 
-			if (!opt_flow_meta || !opt_flow_meta->data)
-			{
-				glog_error("[process_opt_flow] ERROR: NULL metadata!\n");
-				continue;
-			}
+            // --- 공간 일관성(Grid) 분석 로직 ---
+            int grid_cell_width = obj_info[cam_idx][obj_id].width / 4 / FLIP_MOTION_GRID_COLS;
+            int grid_cell_height = obj_info[cam_idx][obj_id].height / 4 / FLIP_MOTION_GRID_ROWS;
+            if (grid_cell_width < 1) grid_cell_width = 1;
+            if (grid_cell_height < 1) grid_cell_height = 1;
 
-			rows = opt_flow_meta->rows; // ✅ rows 값 저장
-			cols = opt_flow_meta->cols;
-			NvOFFlowVector *flow_vectors = (NvOFFlowVector *)(opt_flow_meta->data);
+            int motion_detected_cells = 0;
 
-			// glog_trace("[process_opt_flow] Flow grid: rows=%d, cols=%d, total_size=%d\n",
-			//            rows, cols, rows * cols);
+            for (int r = 0; r < FLIP_MOTION_GRID_ROWS; r++) {
+                for (int c = 0; c < FLIP_MOTION_GRID_COLS; c++) {
+                    
+                    int cell_x_start = (obj_info[cam_idx][obj_id].x / 4) + c * grid_cell_width;
+                    int cell_y_start = (obj_info[cam_idx][obj_id].y / 4) + r * grid_cell_height;
+                    
+                    double cell_move_total = 0.0;
+                    int cell_vector_count = 0;
 
-			// ✅ 좌표 변환 수정: x는 column, y는 row
-			col_start = obj_info[cam_idx][obj_id].x / 4;	// x → col
-			row_start = obj_info[cam_idx][obj_id].y / 4;	// y → row
-			col_num = obj_info[cam_idx][obj_id].width / 4;	// width → col 개수
-			row_num = obj_info[cam_idx][obj_id].height / 4; // height → row 개수
+                    for (int y = cell_y_start; y < cell_y_start + grid_cell_height && y < rows; y++) {
+                        for (int x = cell_x_start; x < cell_x_start + grid_cell_width && x < cols; x++) {
+                            int index = y * cols + x;
+                            if(index >= 0 && index < rows * cols) {
+                                cell_move_total += calculate_sqrt(flow_vectors[index].flowx, flow_vectors[index].flowy);
+                                cell_vector_count++;
+                            }
+                        }
+                    }
 
-			// ✅ 경계 체크 및 조정
-			if (col_start < 0)
-				col_start = 0;
-			if (row_start < 0)
-				row_start = 0;
-			if (col_start >= cols)
-				col_start = cols - 1;
-			if (row_start >= rows)
-				row_start = rows - 1;
+                    if (cell_vector_count > 0) {
+                        double cell_move_avg = cell_move_total / cell_vector_count;
+                        int corr_value = get_correction_value(diagonal); // corr_value 계산
+                        if (cam_idx == RGB_CAM) corr_value += 9;
 
-			if (col_start + col_num > cols)
-				col_num = cols - col_start;
-			if (row_start + row_num > rows)
-				row_num = rows - row_start;
+                        if (cell_move_avg > (g_setting.opt_flow_threshold + corr_value)) {
+                            motion_detected_cells++;
+                        }
+                    }
+                }
+            }
 
-			// glog_trace("[process_opt_flow] Adjusted bounds: row[%d-%d), col[%d-%d)\n",
-			//            row_start, row_start + row_num, col_start, col_start + col_num);
-
-			diagonal = obj_info[cam_idx][obj_id].diagonal;
-			move_size_total = 0.0;
-			count = 0;
-
-			// Process the motion vectors
-			for (int row = row_start; row < (row_start + row_num) && row < rows; ++row)
-			{
-				for (int col = col_start; col < (col_start + col_num) && col < cols; ++col)
-				{
-					int index = row * cols + col;
-					int max_index = rows * cols;
-
-					if (index < 0 || index >= max_index)
-					{
-						glog_error("[process_opt_flow] Index still out of bounds! index=%d, max=%d\n",
-								   index, max_index);
-						continue;
-					}
-
-					NvOFFlowVector flow_vector = flow_vectors[index];
-					move_size = calculate_sqrt(flow_vector.flowx, flow_vector.flowy);
-					move_size_total += move_size;
-					count++;
-				}
-			}
-
-			// glog_trace("[process_opt_flow] Processed %d flow vectors\n", count);
-
-			if (count > 0)
-			{
-				move_size_avg = move_size_total / (double)count;
-				obj_info[cam_idx][obj_id].opt_flow_check_count++;
-				obj_info[cam_idx][obj_id].move_size_avg = update_average(
-					obj_info[cam_idx][obj_id].move_size_avg,
-					obj_info[cam_idx][obj_id].opt_flow_check_count,
-					move_size_avg);
-			}
-
-			if (cam_sec_interval)
-			{
-				bbox_move = get_move_distance(cam_idx, obj_id);
-				rect_size_change = get_rect_size_change(cam_idx, obj_id);
-				set_prev_xy(cam_idx, obj_id);
-				set_prev_rect_size(cam_idx, obj_id);
-
-				if (obj_info[cam_idx][obj_id].move_size_avg > 0)
-				{
-					glog_trace("[SEC] [%d][%d].move_size_avg=%.1f,confi=%.2f,diag=%.1f\n",
-							   cam_idx, obj_id,
-							   obj_info[cam_idx][obj_id].move_size_avg,
-							   obj_info[cam_idx][obj_id].confidence,
-							   diagonal);
-				}
-
-				if (bbox_move < THRESHOLD_BBOX_MOVE &&
-					rect_size_change < THRESHOLD_RECT_SIZE_CHANGE &&
-					g_move_speed == 0)
-				{
-					corr_value = get_correction_value(diagonal);
-					if (cam_idx == RGB_CAM)
-					{
-						corr_value += 9;
-					}
-
-					if (obj_info[cam_idx][obj_id].move_size_avg >
-						(g_setting.opt_flow_threshold + corr_value))
-					{
-						obj_info[cam_idx][obj_id].opt_flow_detected_count++;
-						glog_trace("[%d][%d].opt_flow_detected_count ==> %d\n",
-								   cam_idx, obj_id,
-								   obj_info[cam_idx][obj_id].opt_flow_detected_count);
-					}
-				}
-				else
-				{
-					glog_trace("[SEC] bbox_move=%d,rect_size_change=%d,g_move_speed=%d\n",
-							   bbox_move, rect_size_change, g_move_speed);
-				}
-
-				init_opt_flow(cam_idx, obj_id, 0);
-			}
-		}
-	}
-
-	// glog_trace("[process_opt_flow] END\n");
+            float motion_ratio = (float)motion_detected_cells / (FLIP_MOTION_GRID_ROWS * FLIP_MOTION_GRID_COLS);
+            if (motion_ratio >= FLIP_MOTION_DISTRIBUTION_THRESHOLD) {
+                obj_info[cam_idx][obj_id].motion_is_widespread = 1;
+                glog_trace("[%d][%d] Widespread motion detected! Ratio: %.2f\n", cam_idx, obj_id, motion_ratio);
+            }
+            // --- 공간 일관성 분석 로직 끝 ---
+            
+            // 1초 간격으로 이전 좌표 등을 업데이트하는 로직은 유지 가능 (다른 용도로 사용될 수 있음)
+            if (cam_sec_interval)
+            {
+                set_prev_xy(cam_idx, obj_id);
+                set_prev_rect_size(cam_idx, obj_id);
+                init_opt_flow(cam_idx, obj_id, 0);
+            }
+        }
+    }
 }
 
 #endif
@@ -2111,6 +2071,8 @@ void setup_nv_analysis()
 	init_all_circular_buffers();
 	set_event_save_callback(on_event_save_complete, NULL);
 
+	queue_init(&g_event_queue);
+
 	// 각 카메라별로 동적 할당
 	g_cam_indices = g_malloc(sizeof(int) * g_config.device_cnt);
 
@@ -2176,10 +2138,12 @@ void endup_nv_analysis()
 {
 	if (g_tid)
 	{
-		g_event_class_id = EVENT_EXIT;
+		queue_signal_shutdown(&g_event_queue);
 
 		pthread_join(g_tid, NULL);
 	}
+
+	queue_destroy(&g_event_queue);
 
 	cleanup_all_circular_buffers();
 

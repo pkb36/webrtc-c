@@ -283,8 +283,6 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
         config->http_service_port = 0;
     }
 
-    update_http_service_ip(config);
-
     g_object_unref(reader);
     g_object_unref(parser);
 
@@ -310,6 +308,49 @@ size_t write_callback(void *ptr, size_t size, size_t nmemb, char *data)
 {
     strcat(data, ptr); // Append the response to the data buffer
     return size * nmemb;
+}
+
+char* get_global_ip_robust() {
+    // 여러 외부 IP 확인 서비스를 배열로 관리
+    const char* ip_services[] = {
+        "http://ifconfig.me/ip",
+        "http://api.ipify.org",
+        "http://icanhazip.com",
+        NULL
+    };
+    
+    CURL *curl;
+    char *ip = (char *)malloc(100);
+    if (!ip) return NULL;
+
+    for (int i = 0; ip_services[i] != NULL; i++) {
+        for (int retry = 0; retry < 3; retry++) { // 각 서비스마다 3번 재시도
+            ip[0] = '\0';
+            curl = curl_easy_init();
+            if (curl) {
+                curl_easy_setopt(curl, CURLOPT_URL, ip_services[i]);
+                curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+                curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, ip);
+                
+                glog_trace("Attempting to get external IP from %s (attempt %d)...", ip_services[i], retry + 1);
+                CURLcode res = curl_easy_perform(curl);
+                curl_easy_cleanup(curl);
+                
+                if (res == CURLE_OK && strlen(ip) > 0) {
+                    glog_trace("Successfully got external IP: %s", ip);
+                    return ip; // 성공 시 즉시 반환
+                }
+                g_usleep(500000); // 0.5초 대기 후 재시도
+            }
+        }
+    }
+    
+    // 모든 시도가 실패한 경우
+    free(ip);
+    glog_error("Failed to get external IP from all services.");
+    return NULL;
 }
 
 void get_local_ip(char *ip_str)
@@ -398,19 +439,17 @@ char *get_global_ip_with_timeout()
 static gpointer update_external_ip_thread(gpointer data)
 {
     WebRTCConfig *config = (WebRTCConfig *)data;
-    char *global_ip = get_global_ip_with_timeout();  // 타임아웃 추가된 버전
+    char *global_ip = get_global_ip_robust(); // 새로운 함수 호출
     
     if (global_ip) {
         char *new_ip = g_strdup_printf("%s:%d", global_ip, config->http_service_port);
         
-        // 안전하게 교체
-        char *old_ip = config->http_service_ip;
-        config->http_service_ip = new_ip;
-        g_free(old_ip);
+        // 스레드 안전하게 IP 주소 교체
+        g_free(g_atomic_pointer_get(&config->http_service_ip));
+        g_atomic_pointer_set(&config->http_service_ip, new_ip);
         
-        glog_trace("Updated http_service_ip to external: %s\n", config->http_service_ip);
+        glog_trace("Updated http_service_ip to external (async): %s", new_ip);
         
-        // local_ip.log 파일 업데이트
         char local_ip[100];
         get_local_ip(local_ip);
         write_lines_to_file("local_ip.log", local_ip, new_ip);
@@ -421,20 +460,35 @@ static gpointer update_external_ip_thread(gpointer data)
     return NULL;
 }
 
-void update_http_service_ip(WebRTCConfig *config)
+void update_http_service_ip(WebRTCConfig *config, gboolean is_async)
 {
     char local_ip[100];
     get_local_ip(local_ip);
     
-    // 일단 로컬 IP로 즉시 설정
-    if (config->http_service_ip)
+    // 이전 IP 메모리 해제
+    if (config->http_service_ip) {
         free(config->http_service_ip);
+    }
+    // 우선 로컬 IP로 설정
     config->http_service_ip = g_strdup_printf("%s:%d", local_ip, config->http_service_port);
-    
-    glog_trace("Initial http_service_ip set to local: %s\n", config->http_service_ip);
-    
-    // 백그라운드에서 외부 IP 업데이트
-    g_thread_new("external-ip-update", update_external_ip_thread, config);
+    glog_trace("Initial http_service_ip set to local: %s", config->http_service_ip);
+
+    if (is_async) {
+        // 비동기 모드: 백그라운드에서 외부 IP 업데이트
+        g_thread_new("external-ip-update-async", update_external_ip_thread, config);
+    } else {
+        // 동기 모드: 외부 IP를 가져올 때까지 기다림
+        char *global_ip = get_global_ip_robust();
+        if (global_ip) {
+            free(config->http_service_ip); // 로컬 IP 설정 해제
+            config->http_service_ip = g_strdup_printf("%s:%d", global_ip, config->http_service_port);
+            glog_trace("Updated http_service_ip to external (sync): %s", config->http_service_ip);
+            write_lines_to_file("local_ip.log", local_ip, config->http_service_ip);
+            free(global_ip);
+        } else {
+            glog_error("Failed to get external IP synchronously. Using local IP as fallback.");
+        }
+    }
 }
 
 /*
@@ -452,3 +506,4 @@ int main(int argc, char *argv[])
   free_config(&config);
 }
 */
+

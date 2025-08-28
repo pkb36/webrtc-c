@@ -48,6 +48,7 @@ typedef struct
 
 gboolean load_config(const char *file_name, WebRTCConfig* config, CurlIinfoType *curl_info);
 void free_config(WebRTCConfig* config);
-void update_http_service_ip(WebRTCConfig* config);
+void update_http_service_ip(WebRTCConfig* config, gboolean is_async);
+char* get_global_ip_robust();
 
 #endif

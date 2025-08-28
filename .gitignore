@@ -10,3 +10,4 @@ __pycache__/
 *.cmake
 build_old/
 *.jpg
+*copy.c
