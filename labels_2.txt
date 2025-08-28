@@ -1,4 +1,0 @@
-0_Normal
-1_Heat
-2_Flip
-3_Labour_signs

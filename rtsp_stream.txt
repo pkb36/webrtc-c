@@ -1,1 +1,0 @@
- ./test-launch  "udpsrc port=5002 caps=\"application/x-rtp, media=(string)video\" ! rtpvp8depay ! rtpvp8pay name=pay0"
