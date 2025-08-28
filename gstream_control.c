@@ -25,8 +25,8 @@
 #include "webrtc_peer.h"
 #include "nvds_process.h"
 #include "ptz_control.h"
-#include "tegrastats_monitor.h"
-#include "log_wrapper.h"
+// #include "tegrastats_monitor.h"  // 파일이 존재하지 않음
+#include "unified_log.h"
 
 extern WebRTCConfig g_config;
 extern CurlIinfoType g_curlinfo;

@@ -2,7 +2,7 @@
 #define __DEVICE_SETTING_H__
 
 #include "ptz_control.h"
-#include "log_wrapper.h"
+#include "unified_log.h"
 
 typedef struct 
 {

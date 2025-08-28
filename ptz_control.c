@@ -9,7 +9,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#include "log_wrapper.h"
+#include "unified_log.h"
 #include <json-glib/json-glib.h>
 #include "device_setting.h"
 #include "serial_comm.h"
@@ -50,7 +50,7 @@ static gboolean ptz_watchdog_callback(gpointer user_data)
   // 마지막 명령 후 2초 이상 경과시 자동 정지
   if (g_move_speed > 0 && (current_time - last_ptz_command_time) > 2)
   {
-    glog_info("PTZ watchdog: No command received for 2 seconds, stopping PTZ\n");
+    glog_info("PTZ watchdog: No command received for 2 seconds, stopping PTZ");
     send_ptz_move_cmd(0, 0); // 강제 정지
     g_move_speed = 0;
   }
@@ -109,7 +109,7 @@ PTZErrorCode validate_auto_ptz_sequence(const char *move_seq, unsigned char *dat
 
   if (data[*data_len - 2] != 0xFF)
   {
-    glog_error("Sequence end marker (0xFF) not found\n");
+    glog_error("Sequence end marker (0xFF) not found");
     return PTZ_ERROR_INVALID_SEQUENCE;
   }
 
@@ -192,9 +192,9 @@ gboolean update_ranch_setting(const char *file_name, RanchSetting *setting)
       strcat(ptz_code, temp);
     }
     if (i < MAX_RANCH_POS - 1)
-      strcat(ptz_code, "\",\n");
+      strcat(ptz_code, "\",");
     else
-      strcat(ptz_code, "\"\n");
+      strcat(ptz_code, "\"");
   }
 
   // 2. update config
@@ -215,7 +215,7 @@ int set_ranch_pos(int index, unsigned char *read_data)
 {
   if (!is_open_serial())
   {
-    glog_error("serial device not opened before\n");
+    glog_error("serial device not opened before");
     return -1;
   }
   request_auto_move_ptz_stop();
@@ -224,7 +224,7 @@ int set_ranch_pos(int index, unsigned char *read_data)
   int result = read_cmd_timeout(cmd_data, 7, read_data, 17, 1);           // LJH, response data length is 11, whole response size is 17
   if (result == -1)
   {
-    glog_error("fail read set_ptz_pos \n");
+    glog_error("fail read set_ptz_pos ");
     return result;
   }
   update_ranch_pos(index, &read_data[5], 1);
@@ -248,7 +248,7 @@ int move_ranch_pos(int index)
 {
   if (!is_open_serial())
   {
-    glog_error("serial device not opened before \n");
+    glog_error("serial device not opened before ");
     return -1;
   }
 
@@ -283,7 +283,7 @@ int move_ranch_pos(int index)
   int result = read_cmd_timeout(send_data, 21, read_data, 7, 1);
   if (result == -1)
   {
-    glog_error("fail read move_ptz_pos\n");
+    glog_error("fail read move_ptz_pos");
     return result;
   }
 
@@ -296,7 +296,7 @@ int set_ptz_pos(int id, unsigned char *read_data, int auto_ptz_mode)
 {
   if (!is_open_serial())
   {
-    glog_error("serial device not opened before \n");
+    glog_error("serial device not opened before ");
     return -1;
   }
   request_auto_move_ptz_stop();
@@ -304,7 +304,7 @@ int set_ptz_pos(int id, unsigned char *read_data, int auto_ptz_mode)
   int result = read_cmd_timeout(cmd_data, 7, read_data, 17, 1);           // LJH, response data length is 11, whole response size is 17
   if (result == -1)
   {
-    glog_error("fail read set_ptz_pos \n");
+    glog_error("fail read set_ptz_pos ");
     return result;
   }
   update_ptz_pos(id, &read_data[5], auto_ptz_mode);
@@ -319,7 +319,7 @@ int get_pt_status()
   int result = read_cmd_timeout(cmd_data, 6, read_data, 8, 1); // LJH, reponse date length is 2, whole response size is 8
   if (result == -1)
   {
-    glog_error("fail read get_pt_status \n");
+    glog_error("fail read get_pt_status ");
     return result;
   }
   return read_data[6];
@@ -329,7 +329,7 @@ int move_ptz_pos(int index, int auto_ptz_move)
 {
   if (!is_open_serial())
   {
-    glog_error("serial device not opened before \n");
+    glog_error("serial device not opened before ");
     return -1;
   }
 
@@ -366,7 +366,7 @@ int move_ptz_pos(int index, int auto_ptz_move)
     // 이미 목표 위치에 있는지 확인
     if (is_position_reached(&current_pos, &target_pos, TRUE))
     {
-      glog_trace("Already at target position\n");
+      glog_trace("Already at target position");
       return 0;
     }
   }
@@ -411,7 +411,7 @@ int move_ptz_pos(int index, int auto_ptz_move)
   int result = read_cmd_timeout(send_data, 21, read_data, 7, 1);
   if (result == -1)
   {
-    glog_error("fail read move_ptz_pos \n");
+    glog_error("fail read move_ptz_pos ");
     return result;
   }
 
@@ -590,7 +590,7 @@ void *process_auto_move_ptz(void *arg)
   }
 
   g_no_zoom = 0;
-  glog_trace("end auto_move_ptz\n");
+  glog_trace("end auto_move_ptz");
 
   return 0;
 }
@@ -599,7 +599,7 @@ int auto_move_ptz(const char *move_seq)
 {
   if (!is_open_serial())
   {
-    glog_error("serial device not opened before \n");
+    glog_error("serial device not opened before ");
     return -1;
   }
 
@@ -617,7 +617,7 @@ int auto_move_ptz(const char *move_seq)
 
   if (data[data_len - 2] != 0xFF)
   {
-    glog_error("PTZ Auto Move Preset sequence not validate, end mark not found \n");
+    glog_error("PTZ Auto Move Preset sequence not validate, end mark not found ");
     return -1;
   }
 
@@ -672,7 +672,7 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
 {
   if (is_open_serial() == 0)
   {
-    glog_error("PTZ serial is not open\n");
+    glog_error("PTZ serial is not open");
     ptz_err_code = PTZ_NORMAL;
     stop_retry_count = 0;
     return FALSE;
@@ -680,7 +680,7 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
 
   if (g_cow_tracking_state.is_tracking && ptz_speed > 0)
   {
-    // glog_info("Manual PTZ command blocked during auto tracking\n");
+    // glog_info("Manual PTZ command blocked during auto tracking");
     return FALSE;
   }
 
@@ -697,7 +697,7 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
     }
     else
     {
-      // glog_trace("Send PTZ UART stop command\n");
+      // glog_trace("Send PTZ UART stop command");
     }
   }
   else
@@ -803,7 +803,7 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
     if (iRet < 0)
     {
       ptz_err_code = PTZ_STOP_FAILED;
-      glog_error("Reading serial timed out, PTZ stop failed\n");
+      glog_error("Reading serial timed out, PTZ stop failed");
     }
     else
     {
@@ -814,7 +814,7 @@ gboolean send_ptz_move_cmd(int direction, int ptz_speed)
 // #define TEST_CODE
 #ifdef TEST_CODE
       read_data[5] = 0x01;
-      glog_trace("TEST code is applied\n");
+      glog_trace("TEST code is applied");
 #endif
 
       if (read_data[4] == 0x01 && read_data[5] == 0x00)
@@ -979,7 +979,7 @@ void pause_auto_ptz(void)
   pthread_mutex_lock(&g_auto_ptz_state.mutex);
   g_auto_ptz_state.is_paused = TRUE;
   pthread_mutex_unlock(&g_auto_ptz_state.mutex);
-  glog_info("Auto PTZ paused\n");
+  glog_info("Auto PTZ paused");
 }
 
 void resume_auto_ptz(void)
@@ -987,7 +987,7 @@ void resume_auto_ptz(void)
   pthread_mutex_lock(&g_auto_ptz_state.mutex);
   g_auto_ptz_state.is_paused = FALSE;
   pthread_mutex_unlock(&g_auto_ptz_state.mutex);
-  glog_info("Auto PTZ resumed\n");
+  glog_info("Auto PTZ resumed");
 }
 
 void stop_auto_ptz(void)
@@ -999,7 +999,7 @@ int get_current_position(PTZPosition *pos)
 {
   if (!is_open_serial())
   {
-    glog_error("Serial port not open\n");
+    glog_error("Serial port not open");
     return -1;
   }
 
@@ -1009,7 +1009,7 @@ int get_current_position(PTZPosition *pos)
   int result = read_cmd_timeout(cmd_data, 7, read_data, 17, 1);
   if (result == -1)
   {
-    glog_error("Failed to read current position\n");
+    glog_error("Failed to read current position");
     return -1;
   }
 
@@ -1076,7 +1076,7 @@ gboolean is_ptz_motion_stopped_with_position_check(PTZPosition *target_pos)
   // 현재 위치 읽기
   if (get_current_position(&current_pos) != 0)
   {
-    glog_error("Failed to get current position\n");
+    glog_error("Failed to get current position");
     return TRUE; // 에러시 정지로 간주
   }
 
@@ -1162,10 +1162,10 @@ AutoPTZState get_auto_ptz_state_copy(void)
 
 void display_auto_ptz_status(void)
 {
-  glog_trace("========== All Preset Data ==========\n");
+  glog_trace("========== All Preset Data ==========");
 
   // 1. Auto PTZ 프리셋 확인
-  glog_trace("--- Auto PTZ Presets (AUTO_PTZ_POS_LIST) ---\n");
+  glog_trace("--- Auto PTZ Presets (AUTO_PTZ_POS_LIST) ---");
   int auto_count = 0;
   for (int i = 0; i < MAX_PTZ_PRESET; i++)
   {
@@ -1183,14 +1183,14 @@ void display_auto_ptz_status(void)
       {
         glog_trace("%02X ", AUTO_PTZ_POS_LIST[i][j + 1]);
       }
-      glog_trace("\n");
+      glog_trace("");
       auto_count++;
     }
   }
   glog_trace("Total Auto Presets configured: %d\n\n", auto_count);
 
   // 2. Manual 프리셋 확인
-  glog_trace("--- Manual Presets (PTZ_POS_LIST) ---\n");
+  glog_trace("--- Manual Presets (PTZ_POS_LIST) ---");
   int manual_count = 0;
   for (int i = 0; i < MAX_PTZ_PRESET; i++)
   {
@@ -1207,7 +1207,7 @@ void display_auto_ptz_status(void)
   glog_trace("Total Manual Presets configured: %d\n\n", manual_count);
 
   // 3. 현재 설정 정보
-  glog_trace("--- Current Settings ---\n");
+  glog_trace("--- Current Settings ---");
   glog_trace("auto_ptz_seq: '%s'\n", g_setting.auto_ptz_seq);
   glog_trace("AUTO_PTZ_MOVE_SEQ[0] (Enabled): %d\n", AUTO_PTZ_MOVE_SEQ[0]);
   glog_trace("AUTO_PTZ_MOVE_SEQ[1] (Stay Time): %d\n", AUTO_PTZ_MOVE_SEQ[1]);
@@ -1220,17 +1220,17 @@ void display_auto_ptz_status(void)
     {
       glog_trace("%d ", AUTO_PTZ_MOVE_SEQ[3 + i]);
     }
-    glog_trace("\n");
+    glog_trace("");
   }
 
-  glog_trace("=====================================\n");
+  glog_trace("=====================================");
 }
 
 int goto_preset(int preset_index, int use_auto_preset)
 {
   if (!is_open_serial())
   {
-    glog_error("Serial device not opened\n");
+    glog_error("Serial device not opened");
     return -1;
   }
 
@@ -1245,7 +1245,7 @@ int goto_preset(int preset_index, int use_auto_preset)
   if (is_work_auto_ptz())
   {
     pause_auto_ptz();
-    glog_info("Auto PTZ paused for manual movement\n");
+    glog_info("Auto PTZ paused for manual movement");
   }
 
   // 프리셋 데이터 선택
@@ -1282,7 +1282,7 @@ int goto_preset(int preset_index, int use_auto_preset)
   int result = read_cmd_timeout(send_data, 21, read_data, 7, 1);
   if (result == -1)
   {
-    glog_error("Failed to send move command\n");
+    glog_error("Failed to send move command");
     return -1;
   }
 
@@ -1322,7 +1322,7 @@ void move_and_stop_ptz_immediate(int direction, int speed)
 
 gboolean get_wonwoo_settings(CAM_STAT_WW *settings) {
     if (!is_open_serial()) {
-        glog_error("PTZ serial is not open\n");
+        glog_error("PTZ serial is not open");
         return FALSE;
     }
     
@@ -1342,7 +1342,7 @@ gboolean get_wonwoo_settings(CAM_STAT_WW *settings) {
     int result = read_cmd_timeout(cmd_data, 6, read_data, 20, 1);
     
     if (result < 0) {
-        glog_error("Failed to read Wonwoo settings\n");
+        glog_error("Failed to read Wonwoo settings");
         return FALSE;
     }
     
@@ -1351,16 +1351,16 @@ gboolean get_wonwoo_settings(CAM_STAT_WW *settings) {
         // 데이터 복사 (read_data[5]부터 14바이트)
         memcpy(settings, &read_data[5], sizeof(CAM_STAT_WW));
         
-        glog_info("Wonwoo settings read successfully\n");
+        glog_info("Wonwoo settings read successfully");
         return TRUE;
     }
     
-    glog_error("Invalid response for Get OneTime_WW\n");
+    glog_error("Invalid response for Get OneTime_WW");
     return FALSE;
 }
 
 void parse_wonwoo_settings(CAM_STAT_WW *settings) {
-    glog_info("=== Wonwoo Camera Settings ===\n");
+    glog_info("=== Wonwoo Camera Settings ===");
     
     // P0 파싱
     glog_info("WB Mode: %s\n", (settings->p0 & 0x01) ? "Manual" : "Auto");
@@ -1392,7 +1392,7 @@ void parse_wonwoo_settings(CAM_STAT_WW *settings) {
     glog_info("INTERVAL_TIME: %d\n", settings->p11);
     glog_info("WB_EXTEND: %d\n", settings->p12);
     glog_info("COLOR_LEVEL: 0x%02X\n", settings->p13);
-    glog_info("==============================\n");
+    glog_info("==============================");
 }
 
 gboolean send_ptz_move_to_pixel(int x, int y, int speed)
@@ -1517,7 +1517,7 @@ gboolean send_ptz_relative_move_by_pixel_offset(int x, int y, int speed) {
     int current_tilt = (current_pos[8] << 8) | current_pos[7];
     int current_zoom = (current_pos[10] << 8) | current_pos[9];
 
-    printf("[PTZ] Current Position - Pan: %d, Tilt: %d, Zoom: %d\n",
+    log_debug("[PTZ] Current Position - Pan: %d, Tilt: %d, Zoom: %d\n",
            current_pan, current_tilt, current_zoom);
 
     // === MM-308-M2 FOV 계산 ===
@@ -1531,15 +1531,15 @@ gboolean send_ptz_relative_move_by_pixel_offset(int x, int y, int speed) {
     float fov_h = fov_h_wide - (fov_h_wide - fov_h_tele) * zoom_ratio;
     float fov_v = fov_v_wide - (fov_v_wide - fov_v_tele) * zoom_ratio;
 
-    printf("[PTZ] Effective FOV - H: %.2f°, V: %.2f° (zoom_ratio: %.3f)\n", 
+    log_debug("[PTZ] Effective FOV - H: %.2f°, V: %.2f° (zoom_ratio: %.3f)\n", 
            fov_h, fov_v, zoom_ratio);
 
     // 픽셀 오프셋 → 각도 오프셋
     float pan_offset = (dx / (float)image_width) * fov_h;
     float tilt_offset = (dy / (float)image_height) * fov_v;
 
-    printf("[PTZ] Pixel offset - dx: %d, dy: %d\n", dx, dy);
-    printf("[PTZ] Angle offset - pan: %.2f°, tilt: %.2f°\n", pan_offset, tilt_offset);
+    log_debug("[PTZ] Pixel offset - dx: %d, dy: %d\n", dx, dy);
+    log_debug("[PTZ] Angle offset - pan: %.2f°, tilt: %.2f°\n", pan_offset, tilt_offset);
 
     int target_pan = current_pan + (int)(pan_offset * 100.0f);
     
@@ -1550,7 +1550,7 @@ gboolean send_ptz_relative_move_by_pixel_offset(int x, int y, int speed) {
     int target_tilt = current_tilt + (int)(tilt_offset * 100.0f);
     // int target_tilt = current_tilt - (int)(tilt_offset * 100.0f);  // 부호 변경!
 
-    printf("[PTZ] Target Position - Pan: %d, Tilt: %d\n", target_pan, target_tilt);
+    log_debug("[PTZ] Target Position - Pan: %d, Tilt: %d\n", target_pan, target_tilt);
 
     // Pan 범위 처리 (0 ~ 36000)
     if (target_pan > 36000) {
@@ -1566,7 +1566,7 @@ gboolean send_ptz_relative_move_by_pixel_offset(int x, int y, int speed) {
         target_tilt = 9000;
     }
 
-    printf("[PTZ] Final Target - Pan: %d, Tilt: %d\n", target_pan, target_tilt);
+    log_debug("[PTZ] Final Target - Pan: %d, Tilt: %d\n", target_pan, target_tilt);
 
     // 줌/포커스는 현재 값 유지
     return send_ptz_absolute_move(target_pan, target_tilt, &current_pos[9], speed);
@@ -1666,26 +1666,26 @@ gboolean send_ptz_area_move_with_response(int x1, int y1, int x2, int y2, int sp
     unsigned char resp[7];
     if (read_cmd_timeout(NULL, 0, resp, sizeof(resp), 1) < 0)
     {
-        printf("[PTZ] AreaMove 응답 없음\n");
+        log_debug("[PTZ] AreaMove 응답 없음");
         return FALSE;
     }
 
     // 응답 데이터 출력
-    printf("[PTZ] AreaMove 응답: ");
+    log_debug("[PTZ] AreaMove 응답: ");
     for (int i = 0; i < sizeof(resp); i++)
     {
-        printf("%02X ", resp[i]);
+        log_debug("%02X ", resp[i]);
     }
-    printf("\n");
+    log_debug("");
 
     // 응답 유효성 확인 (0x96, 0x00, 0x27, 0x01 등등 체크 가능)
     if (resp[0] == 0x96 && resp[2] == 0x27 && resp[3] == 0x01)
     {
-        printf("[PTZ] AreaMove 성공, 응답 수신 완료\n");
+        log_debug("[PTZ] AreaMove 성공, 응답 수신 완료");
         return TRUE;
     }
 
-    printf("[PTZ] AreaMove 응답 포맷 오류\n");
+    log_debug("[PTZ] AreaMove 응답 포맷 오류");
     return FALSE;
 }
 
@@ -1723,5 +1723,5 @@ void sync_auto_ptz_list_from_setting(void)
             glog_trace("Synced Auto PTZ Preset[%d]: enabled\n", i);
         }
     }
-    glog_trace("AUTO_PTZ_POS_LIST synchronized with g_setting\n");
+    glog_trace("AUTO_PTZ_POS_LIST synchronized with g_setting");
 }

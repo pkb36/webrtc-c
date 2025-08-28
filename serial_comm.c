@@ -8,7 +8,7 @@
 #include <sys/select.h>
 #include <string.h>
 #include <stdlib.h>
-#include "log_wrapper.h"
+#include "unified_log.h"
 #include <json-glib/json-glib.h>
 #include "device_setting.h"
 

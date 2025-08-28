@@ -3,7 +3,7 @@
 
 #include <gst/gst.h>
 #include "json_utils.h"
-#include "log_wrapper.h"
+#include "unified_log.h"
 #include "version.h"
 #include "global_define.h"
 

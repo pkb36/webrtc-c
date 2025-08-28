@@ -17,7 +17,7 @@
 #include "socket_comm.h"
 #define USE_JSON_MESSAGE_TEMPLATE
 #include "json_utils.h"
-#include "log_wrapper.h"
+#include "unified_log.h"
 
 static GMainLoop *loop;
 static GstElement *pipeline, *webrtc = NULL;
@@ -579,7 +579,7 @@ main (int argc, char *argv[])
   GOptionContext *context;
   GError *error = NULL;
 
-  init_logging("sender");
+  LOG_INIT("webrtc_sender");
 
   context = g_option_context_new ("- gstreamer webrtc sender ");
   g_option_context_add_main_entries (context, entries, NULL);
@@ -620,7 +620,7 @@ main (int argc, char *argv[])
 
   glog_trace("Pipeline stopped end client [%d] \n", g_comm_port);
 
-  cleanup_logging();
+  LOG_CLEANUP();
 
   return 0;
 }

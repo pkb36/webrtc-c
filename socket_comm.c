@@ -9,7 +9,7 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include "socket_comm.h"
-#include "log_wrapper.h"
+#include "unified_log.h"
 #include "device_setting.h"
 #include "curllib.h"
 #include "config.h"
@@ -52,14 +52,14 @@ void *process_socket_comm_input(void *arg)
                      MSG_WAITALL, (struct sockaddr *)&readaddr, &len);
 
         buffer[n] = 0;
-        // glog_trace("recvfrom %d %s \n", n, buffer);
+        // 최적화: 데이터 수신 로그 제거 (성능상 불필요)
         if (strcmp(buffer, "EXIT") == 0)
         {
             break;
         }
         else if (strcmp(buffer, "CONNECT") == 0)
         {
-            glog_trace("connected client [%d] \n", pInfo->port);
+            log_info("Client connected on port %d", pInfo->port);
             pInfo->clientaddr = readaddr;
             pInfo->connect = 1;
             continue;
@@ -71,7 +71,7 @@ void *process_socket_comm_input(void *arg)
         }
     }
 
-    glog_trace("thread end %d , %d\n", pInfo->socketfd, pInfo->port);
+    log_info("Socket thread ended: port %d", pInfo->port);
     return 0;
 }
 
@@ -260,7 +260,7 @@ struct Item dequeue(struct Queue *q)
 
     if (is_queue_empty(q))
     {
-        printf("Queue is empty! Cannot dequeue\n");
+        // 최적화: 정상 작동에서는 로그 최소화
         return emptyItem; // Return an empty item
     }
     else
@@ -271,7 +271,7 @@ struct Item dequeue(struct Queue *q)
         {
             q->front = q->rear = -1; // Reset the queue when it's empty
         }
-        printf("Dequeued item: index=%d,pos=%s,ID=%s\n", dequeuedItem.index, dequeuedItem.pos_str, dequeuedItem.id_str);
+        // 최적화: 대기열 아이템 로그 제거
         return dequeuedItem;
     }
 }
@@ -281,7 +281,7 @@ void display(struct Queue *q)
 {
     if (is_queue_empty(q))
     {
-        printf("Queue is empty!\n");
+        // 최적화: 비어있는 대기열 로그 제거
     }
     else
     {
@@ -427,14 +427,18 @@ void *receive_data(void *arg)
     socklen_t len;
 
     memset(&readaddr, 0, sizeof(readaddr));
-    glog_trace("thread start %d, %d\n", pInfo->port, pInfo->socketfd);
+    log_info("Socket thread started: port %d", pInfo->port);
 
     while (1)
     {
         len = sizeof(readaddr);
         n = recvfrom(pInfo->socketfd, (char *)buffer, MAX_BUF_SIZE, MSG_WAITALL, (struct sockaddr *)&readaddr, &len);
         buffer[n] = 0;
-        glog_trace("received buffer='%s' len=%d\n", buffer, n);
+        // 최적화: 수신 데이터 로그 제거 (성능상 불필요)
+        if (n < 0) {
+            log_error("Socket receive error on port %d: %s", pInfo->port, strerror(errno));
+            break;
+        }
         if (strcmp(buffer, "EXIT") == 0)
         {
             break;
@@ -445,7 +449,7 @@ void *receive_data(void *arg)
         }
     }
 
-    glog_trace("thread end %d, %d\n", pInfo->socketfd, pInfo->port);
+    log_info("Socket thread ended: port %d", pInfo->port);
     return 0;
 }
 

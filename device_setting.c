@@ -3,7 +3,7 @@
 #include <string.h>
 #include "device_setting.h"
 #include <stdio.h>
-#include "log_wrapper.h"
+#include "unified_log.h"
 #include "serial_comm.h"
 #include "nvds_process.h"
 #include <sys/stat.h>     // stat 구조체와 함수용
@@ -111,6 +111,7 @@ gboolean load_device_setting(const char *file_name, DeviceSetting* setting)
    JsonReader *reader = json_reader_new (json_parser_get_root (parser));
    root = json_parser_get_root (parser);
     if (!JSON_NODE_HOLDS_OBJECT (root)) {
+      g_object_unref (reader);  // Fix memory leak
       g_object_unref (parser);
       pthread_mutex_unlock(&file_mutex);
       return FALSE;
@@ -168,7 +169,14 @@ gboolean load_device_setting(const char *file_name, DeviceSetting* setting)
   if (json_object_has_member (object, "auto_ptz_seq")) {
       const char* value = json_object_get_string_member (object, "auto_ptz_seq");
       glog_trace("parse member %s : %s\n", "auto_ptz_seq", value);  
-      strcpy(setting->auto_ptz_seq, value);
+      // Buffer overflow protection
+      if (value && strlen(value) < sizeof(setting->auto_ptz_seq)) {
+        strncpy(setting->auto_ptz_seq, value, sizeof(setting->auto_ptz_seq) - 1);
+        setting->auto_ptz_seq[sizeof(setting->auto_ptz_seq) - 1] = '\0';
+      } else {
+        glog_trace("auto_ptz_seq value too long or invalid, using default\n");
+        setting->auto_ptz_seq[0] = 0;
+      }
   } else {
     setting->auto_ptz_seq[0] = 0;
   }
@@ -183,6 +191,11 @@ gboolean load_device_setting(const char *file_name, DeviceSetting* setting)
 
   JsonArray *ptz_preset_array = json_object_get_array_member(object, "ptz_preset");
   guint array_size = json_array_get_length(ptz_preset_array);
+  // Array bounds protection
+  if (array_size > MAX_PTZ_PRESET) {
+    glog_trace("Warning: ptz_preset array size (%d) exceeds maximum (%d), truncating\n", array_size, MAX_PTZ_PRESET);
+    array_size = MAX_PTZ_PRESET;
+  }
   for (guint i = 0; i < array_size; ++i) {
       const gchar *preset = json_array_get_string_element(ptz_preset_array, i);
       glog_trace("PTZ Preset %d: %s\n", i, preset);
@@ -200,6 +213,11 @@ gboolean load_device_setting(const char *file_name, DeviceSetting* setting)
 
   ptz_preset_array = json_object_get_array_member(object, "auto_ptz_preset");
   array_size = json_array_get_length(ptz_preset_array);
+  // Array bounds protection
+  if (array_size > MAX_PTZ_PRESET) {
+    glog_trace("Warning: auto_ptz_preset array size (%d) exceeds maximum (%d), truncating\n", array_size, MAX_PTZ_PRESET);
+    array_size = MAX_PTZ_PRESET;
+  }
   for (guint i = 0; i < array_size; ++i) {
       const gchar *preset = json_array_get_string_element(ptz_preset_array, i);
       glog_trace("Auto PTZ Preset %d: %s\n", i, preset);
@@ -512,34 +530,52 @@ gboolean update_setting(const char *file_name, DeviceSetting* setting)
    }
  }
  
- //1. make PTZ code
+ //1. make PTZ code with buffer overflow protection
  char ptz_code[(MAX_PTZ_PRESET + 2) * PTZ_POS_SIZE *4] = {0};
  char auto_ptz_code[(MAX_PTZ_PRESET + 2) * PTZ_POS_SIZE*4] = {0};
- char temp[8];
+ char temp[16];  // Increased buffer size for safety
+ size_t ptz_code_len = 0;
+ const size_t max_ptz_len = sizeof(ptz_code) - 1;
+ 
  for(int i = 0 ; i < MAX_PTZ_PRESET ; i++){
-   sprintf(temp, "\"%02x",setting->ptz_preset[i][0]);
-   strcat(ptz_code,temp);
+   snprintf(temp, sizeof(temp), "\"%02x", setting->ptz_preset[i][0]);
+   if (ptz_code_len + strlen(temp) >= max_ptz_len) break;  // Buffer overflow protection
+   strcat(ptz_code, temp);
+   ptz_code_len += strlen(temp);
+   
    for(int j = 1 ; j < PTZ_POS_SIZE ; j++){
-     sprintf(temp, ",%02x",setting->ptz_preset[i][j]);
-     strcat(ptz_code,temp);
+     snprintf(temp, sizeof(temp), ",%02x", setting->ptz_preset[i][j]);
+     if (ptz_code_len + strlen(temp) >= max_ptz_len) break;
+     strcat(ptz_code, temp);
+     ptz_code_len += strlen(temp);
    }
-   if (i < MAX_PTZ_PRESET-1 ) 
-     strcat(ptz_code,"\",\n");
-   else 
-     strcat(ptz_code,"\"\n");
+   
+   const char *suffix = (i < MAX_PTZ_PRESET-1) ? "\",\n" : "\"\n";
+   if (ptz_code_len + strlen(suffix) >= max_ptz_len) break;
+   strcat(ptz_code, suffix);
+   ptz_code_len += strlen(suffix);
  }
 
+ size_t auto_ptz_code_len = 0;
+ const size_t max_auto_ptz_len = sizeof(auto_ptz_code) - 1;
+ 
  for(int i = 0 ; i < MAX_PTZ_PRESET ; i++){
-   sprintf(temp, "\"%02x",setting->auto_ptz_preset[i][0]);
-   strcat(auto_ptz_code,temp);
+   snprintf(temp, sizeof(temp), "\"%02x", setting->auto_ptz_preset[i][0]);
+   if (auto_ptz_code_len + strlen(temp) >= max_auto_ptz_len) break;  // Buffer overflow protection
+   strcat(auto_ptz_code, temp);
+   auto_ptz_code_len += strlen(temp);
+   
    for(int j = 1 ; j < PTZ_POS_SIZE ; j++){
-     sprintf(temp, ",%02x",setting->auto_ptz_preset[i][j]);
-     strcat(auto_ptz_code,temp);
+     snprintf(temp, sizeof(temp), ",%02x", setting->auto_ptz_preset[i][j]);
+     if (auto_ptz_code_len + strlen(temp) >= max_auto_ptz_len) break;
+     strcat(auto_ptz_code, temp);
+     auto_ptz_code_len += strlen(temp);
    }
-   if (i < MAX_PTZ_PRESET-1 ) 
-     strcat(auto_ptz_code,"\",\n");
-   else 
-     strcat(auto_ptz_code,"\"\n");
+   
+   const char *suffix = (i < MAX_PTZ_PRESET-1) ? "\",\n" : "\"\n";
+   if (auto_ptz_code_len + strlen(suffix) >= max_auto_ptz_len) break;
+   strcat(auto_ptz_code, suffix);
+   auto_ptz_code_len += strlen(suffix);
  }
    
  //2. update config - 임시 파일에 쓰기
@@ -547,9 +583,12 @@ gboolean update_setting(const char *file_name, DeviceSetting* setting)
  if(fp == NULL){
    glog_trace("fail open temp device setting file %s: %s\n", temp_file, strerror(errno));
    
-   // 백업 파일 복원
-   if (access(backup_file, F_OK) == 0) {
-     rename(backup_file, file_name);
+   // 백업 파일 복원 (race condition 방지)
+   struct stat backup_stat;
+   if (stat(backup_file, &backup_stat) == 0) {
+     if (rename(backup_file, file_name) != 0) {
+       glog_trace("Failed to restore backup file: %s\n", strerror(errno));
+     }
    }
    pthread_mutex_unlock(&file_mutex);
    return FALSE;
@@ -561,8 +600,8 @@ gboolean update_setting(const char *file_name, DeviceSetting* setting)
    fchmod(fileno(fp), st.st_mode);
    fchown(fileno(fp), st.st_uid, st.st_gid);
  } else {
-   // 기본 권한 설정 (사용자:rw, 그룹:rw, 기타:r)
-   fchmod(fileno(fp), 0664);
+   // 보안 강화: 소유자만 읽기/쓰기 가능
+   fchmod(fileno(fp), 0600);
  }
 
  int write_result = fprintf(fp,device_setting_template_string_json,
@@ -606,9 +645,12 @@ gboolean update_setting(const char *file_name, DeviceSetting* setting)
    fclose(fp);
    unlink(temp_file);
    
-   // 백업 파일 복원
-   if (access(backup_file, F_OK) == 0) {
-     rename(backup_file, file_name);
+   // 백업 파일 복원 (race condition 방지)
+   struct stat backup_stat;
+   if (stat(backup_file, &backup_stat) == 0) {
+     if (rename(backup_file, file_name) != 0) {
+       glog_trace("Failed to restore backup file: %s\n", strerror(errno));
+     }
    }
    pthread_mutex_unlock(&file_mutex);
    return FALSE;
@@ -620,9 +662,12 @@ gboolean update_setting(const char *file_name, DeviceSetting* setting)
    fclose(fp);
    unlink(temp_file);
    
-   // 백업 파일 복원
-   if (access(backup_file, F_OK) == 0) {
-     rename(backup_file, file_name);
+   // 백업 파일 복원 (race condition 방지)
+   struct stat backup_stat;
+   if (stat(backup_file, &backup_stat) == 0) {
+     if (rename(backup_file, file_name) != 0) {
+       glog_trace("Failed to restore backup file: %s\n", strerror(errno));
+     }
    }
    pthread_mutex_unlock(&file_mutex);
    return FALSE;
@@ -633,9 +678,12 @@ gboolean update_setting(const char *file_name, DeviceSetting* setting)
    fclose(fp);
    unlink(temp_file);
    
-   // 백업 파일 복원
-   if (access(backup_file, F_OK) == 0) {
-     rename(backup_file, file_name);
+   // 백업 파일 복원 (race condition 방지)
+   struct stat backup_stat;
+   if (stat(backup_file, &backup_stat) == 0) {
+     if (rename(backup_file, file_name) != 0) {
+       glog_trace("Failed to restore backup file: %s\n", strerror(errno));
+     }
    }
    pthread_mutex_unlock(&file_mutex);
    return FALSE;
@@ -648,17 +696,23 @@ gboolean update_setting(const char *file_name, DeviceSetting* setting)
    glog_trace("Failed to move temp file to final location: %s\n", strerror(errno));
    unlink(temp_file);
    
-   // 백업 파일 복원
-   if (access(backup_file, F_OK) == 0) {
-     rename(backup_file, file_name);
+   // 백업 파일 복원 (race condition 방지)
+   struct stat backup_stat;
+   if (stat(backup_file, &backup_stat) == 0) {
+     if (rename(backup_file, file_name) != 0) {
+       glog_trace("Failed to restore backup file: %s\n", strerror(errno));
+     }
    }
    pthread_mutex_unlock(&file_mutex);
    return FALSE;
  }
 
- // 성공적으로 완료되면 백업 파일 삭제
- if (access(backup_file, F_OK) == 0) {
-   unlink(backup_file);
+ // 성공적으로 완료되면 백업 파일 삭제 (race condition 방지)
+ struct stat final_backup_stat;
+ if (stat(backup_file, &final_backup_stat) == 0) {
+   if (unlink(backup_file) != 0) {
+     glog_trace("Warning: Failed to remove backup file: %s\n", strerror(errno));
+   }
  }
 
  glog_trace("Successfully updated device setting file: %s\n", file_name);

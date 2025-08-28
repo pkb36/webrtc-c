@@ -33,7 +33,7 @@
 #include "nvds_process.h"
 #include "nvds_utils.h"
 #include "ptz_control.h"
-#include "log_wrapper.h"
+#include "unified_log.h"
 #include "command_handler.h"
 
 #include <unistd.h> // write, close 등을 위해 추가
@@ -94,7 +94,15 @@ extern void process_data(char *buffer, int len, void *arg);
 extern char *get_global_ip_with_timeout();
 extern void handle_custom_command(gJSONObj *jsonObj, send_message_func_t send_func);
 
-extern pthread_mutex_t g_send_info_mutex;
+// Removed duplicate mutex declaration - already declared at line 48
+
+// Helper function for error cleanup
+static void cleanup_gerror(GError **error) {
+    if (error && *error) {
+        g_error_free(*error);
+        *error = NULL;
+    }
+}
 
 // PTZ 관련 전역 변수와 함수 선언부 (gstream_main.c 상단에 추가)
 static gchar *g_ptz_pipe_name = "/home/nvidia/webrtc/ptz_command_pipe";
@@ -102,6 +110,7 @@ static GIOChannel *g_ptz_channel = NULL;
 static guint g_ptz_watch_id = 0;
 
 // 함수 선언 (다른 함수들 선언 부분에 추가)
+int fifo_exists(const char *filename);  // Forward declaration
 static gboolean init_ptz_pipe(void);
 static void cleanup_ptz_pipe(void);
 static gboolean ptz_pipe_read_callback(GIOChannel *source, GIOCondition condition, gpointer data);
@@ -275,7 +284,7 @@ static gboolean ptz_pipe_read_callback(GIOChannel *source, GIOCondition conditio
             if (error)
             {
                 glog_error("Error reading from PTZ pipe: %s\n", error->message);
-                g_error_free(error);
+                cleanup_gerror(&error);
             }
         }
         else if (status == G_IO_STATUS_EOF)
@@ -294,22 +303,7 @@ static gboolean ptz_pipe_read_callback(GIOChannel *source, GIOCondition conditio
 }
 
 // 주기적으로 파이프 상태를 확인하는 함수
-// static gboolean check_ptz_pipe_status(gpointer data) {
-//     static int check_count = 0;
-//     check_count++;
-
-//     if (check_count % 10 == 0) { // 10초마다
-//         glog_trace("PTZ pipe status check #%d\n", check_count);
-
-//         // 파이프 파일이 여전히 존재하는지 확인
-//         if (!fifo_exists(g_ptz_pipe_name)) {
-//             glog_trace("PTZ pipe disappeared, recreating...\n");
-//             init_ptz_pipe();
-//         }
-//     }
-
-//     return TRUE; // 계속 실행
-// }
+// Removed dead code - unused PTZ pipe status check function
 
 // PTZ 파이프 초기화 함수
 static gboolean init_ptz_pipe(void)
@@ -380,7 +374,7 @@ static gboolean init_ptz_pipe(void)
         if (error)
         {
             glog_error("Failed to set encoding: %s\n", error->message);
-            g_error_free(error);
+            cleanup_gerror(&error);
             error = NULL;
         }
         // UTF-8 설정이 실패하면 기본 인코딩 사용
@@ -388,7 +382,7 @@ static gboolean init_ptz_pipe(void)
         if (error)
         {
             glog_error("Failed to set default encoding: %s\n", error->message);
-            g_error_free(error);
+            cleanup_gerror(&error);
         }
     }
 
@@ -431,7 +425,7 @@ static void cleanup_ptz_pipe(void)
         g_ptz_channel = NULL;
     }
 
-    if (access(g_ptz_pipe_name, F_OK) == 0)
+    if (fifo_exists(g_ptz_pipe_name))
     {
         unlink(g_ptz_pipe_name);
     }
@@ -577,7 +571,7 @@ static gboolean start_pipeline(void)
     if (error)
     {
         glog_error("Failed to parse launch: %s\n", error->message);
-        g_error_free(error);
+        cleanup_gerror(&error);
         goto err;
     }
 
@@ -896,7 +890,7 @@ static void on_server_connected(SoupSession *session, GAsyncResult *res, SoupMes
     if (error)
     {
         cleanup_and_retry_connect(error->message, SERVER_CONNECTION_ERROR);
-        g_error_free(error);
+        cleanup_gerror(&error);
         return;
     }
 
@@ -1354,7 +1348,7 @@ int main(int argc, char *argv[])
 
     // redirect_output();
 
-    init_logging("gstream_main");
+    LOG_INIT("gstream_main");
 
     printf("=== gstrea_main start version [%s] ===\n", GSTREAM_MAIN_VER);
 
@@ -1541,7 +1535,7 @@ int main(int argc, char *argv[])
     pthread_mutex_destroy(&g_send_mutex);
     pthread_mutex_destroy(&g_process_msg_mutex);
 
-    cleanup_logging();
+    LOG_CLEANUP();
 
     return 0;
 }

@@ -2,7 +2,7 @@
 #define __WEBRTC_CONFIG_H__
 
 #include "curllib.h"
-#include "log_wrapper.h"
+#include "unified_log.h"
 
 typedef struct 
 {

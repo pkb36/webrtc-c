@@ -36,6 +36,7 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
     root = json_parser_get_root(parser);
     if (!JSON_NODE_HOLDS_OBJECT(root))
     {
+        g_object_unref(reader);  // Fix memory leak
         g_object_unref(parser);
         return FALSE;
     }
@@ -44,8 +45,15 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
     if (json_object_has_member(object, "camera_id"))
     {
         const char *value = json_object_get_string_member(object, "camera_id");
-        glog_trace("parse member %s : %s\n", "camera_id", value);
-        config->camera_id = strdup(value);
+        if (value && strlen(value) > 0 && strlen(value) < 256) {  // Input validation
+            glog_trace("parse member %s : %s\n", "camera_id", value);
+            config->camera_id = strdup(value);
+        } else {
+            glog_trace("Invalid camera_id value\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
@@ -57,9 +65,16 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
         child = json_object_get_object_member(object, "tty");
         const char *value = json_object_get_string_member(child, "name");
         int value2 = json_object_get_int_member(child, "baudrate");
-        glog_trace("parse member %s : %s, %d\n", "tty", value, value2);
-        config->tty_name = strdup(value);
-        config->tty_buadrate = value2;
+        if (value && strlen(value) > 0 && strlen(value) < 256) {  // Input validation
+            glog_trace("parse member %s : %s, %d\n", "tty", value, value2);
+            config->tty_name = strdup(value);
+            config->tty_buadrate = value2;
+        } else {
+            glog_trace("Invalid tty name\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
@@ -110,9 +125,18 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
         return FALSE;
     }
 
+    // Array bounds protection
+    if (config->device_cnt > 10 || config->device_cnt < 0) {
+        glog_trace("Invalid device_cnt: %d\n", config->device_cnt);
+        g_object_unref(reader);
+        g_object_unref(parser);
+        return FALSE;
+    }
+    
     for (int i = 0; i < config->device_cnt; i++)
     {
-        char video_name[6] = "videox";
+        char video_name[8] = "videox";  // Increased buffer size
+        if (i > 9) break;  // Safety check
         video_name[5] = '0' + i;
         if (json_object_has_member(object, video_name))
         {
@@ -137,8 +161,15 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
     if (json_object_has_member(object, "server_ip"))
     {
         const char *value = json_object_get_string_member(object, "server_ip");
-        glog_trace("parse member %s : %s\n", "server_ip", value);
-        config->server_ip = strdup(value);
+        if (value && strlen(value) > 0 && strlen(value) < 256) {
+            glog_trace("parse member %s : %s\n", "server_ip", value);
+            config->server_ip = strdup(value);
+        } else {
+            glog_trace("Invalid server_ip\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
@@ -148,8 +179,15 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
     if (json_object_has_member(object, "snapshot_path"))
     {
         const char *value = json_object_get_string_member(object, "snapshot_path");
-        glog_trace("parse member %s : %s\n", "snapshot_path", value);
-        config->snapshot_path = strdup(value);
+        if (value && strlen(value) > 0 && strlen(value) < 512) {
+            glog_trace("parse member %s : %s\n", "snapshot_path", value);
+            config->snapshot_path = strdup(value);
+        } else {
+            glog_trace("Invalid snapshot_path\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
@@ -170,8 +208,15 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
     if (json_object_has_member(object, "device_setting_path"))
     {
         const char *value = json_object_get_string_member(object, "device_setting_path");
-        glog_trace("parse member %s : %s\n", "device_setting_path", value);
-        config->device_setting_path = strdup(value);
+        if (value && strlen(value) > 0 && strlen(value) < 512) {
+            glog_trace("parse member %s : %s\n", "device_setting_path", value);
+            config->device_setting_path = strdup(value);
+        } else {
+            glog_trace("Invalid device_setting_path\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
@@ -182,8 +227,16 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
     if (json_object_has_member(object, "event_user_id"))
     {
         const char *value = json_object_get_string_member(object, "event_user_id");
-        glog_trace("parse member %s : %s\n", "event_user_id", value);
-        strcpy(curl_info->phone, value);
+        if (value && strlen(value) < sizeof(curl_info->phone)) {
+            glog_trace("parse member %s : %s\n", "event_user_id", value);
+            strncpy(curl_info->phone, value, sizeof(curl_info->phone) - 1);
+            curl_info->phone[sizeof(curl_info->phone) - 1] = '\0';
+        } else {
+            glog_trace("Invalid or too long event_user_id\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
@@ -193,8 +246,17 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
     if (json_object_has_member(object, "event_user_pw"))
     {
         const char *value = json_object_get_string_member(object, "event_user_pw");
-        glog_trace("parse member %s : %s\n", "event_user_pw", value);
-        strcpy(curl_info->password, value);
+        if (value && strlen(value) < sizeof(curl_info->password)) {
+            // Security: Don't log password in plaintext
+            glog_trace("parse member %s : [MASKED]\n", "event_user_pw");
+            strncpy(curl_info->password, value, sizeof(curl_info->password) - 1);
+            curl_info->password[sizeof(curl_info->password) - 1] = '\0';
+        } else {
+            glog_trace("Invalid or too long event_user_pw\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
@@ -204,23 +266,45 @@ int load_config(const char *file_name, WebRTCConfig *config, CurlIinfoType *curl
     if (json_object_has_member(object, "event_server_ip"))
     {
         const char *value = json_object_get_string_member(object, "event_server_ip");
-        glog_trace("parse member %s : %s\n", "event_server_ip", value);
-        strcpy(curl_info->server_ip, value);
-        curl_info->port = 0;
+        if (value && strlen(value) < sizeof(curl_info->server_ip)) {
+            glog_trace("parse member %s : %s\n", "event_server_ip", value);
+            strncpy(curl_info->server_ip, value, sizeof(curl_info->server_ip) - 1);
+            curl_info->server_ip[sizeof(curl_info->server_ip) - 1] = '\0';
+            curl_info->port = 0;
+        } else {
+            glog_trace("Invalid or too long event_server_ip\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
         return FALSE;
     }
 
-    strcpy(curl_info->snapshot_path, config->snapshot_path);
+    // Safe string copy with bounds checking
+    if (config->snapshot_path && strlen(config->snapshot_path) < sizeof(curl_info->snapshot_path)) {
+        strncpy(curl_info->snapshot_path, config->snapshot_path, sizeof(curl_info->snapshot_path) - 1);
+        curl_info->snapshot_path[sizeof(curl_info->snapshot_path) - 1] = '\0';
+    } else {
+        glog_trace("Invalid or too long snapshot_path\n");
+        curl_info->snapshot_path[0] = '\0';  // Set empty string as fallback
+    }
 
     // record infomation
     if (json_object_has_member(object, "record_path"))
     {
         const char *value = json_object_get_string_member(object, "record_path");
-        glog_trace("parse member %s : %s\n", "record_path", value);
-        config->record_path = strdup(value);
+        if (value && strlen(value) > 0 && strlen(value) < 512) {
+            glog_trace("parse member %s : %s\n", "record_path", value);
+            config->record_path = strdup(value);
+        } else {
+            glog_trace("Invalid record_path\n");
+            g_object_unref(reader);
+            g_object_unref(parser);
+            return FALSE;
+        }
     }
     else
     {
@@ -303,11 +387,25 @@ void free_config(WebRTCConfig *config)
     free(config->http_service_ip);
 }
 
-// Callback function to handle the response
+// Callback function to handle the response with buffer overflow protection
 size_t write_callback(void *ptr, size_t size, size_t nmemb, char *data)
 {
-    strcat(data, ptr); // Append the response to the data buffer
-    return size * nmemb;
+    size_t total_size = size * nmemb;
+    size_t current_len = strlen(data);
+    const size_t MAX_RESPONSE_SIZE = 99;  // Reserve 1 byte for null terminator
+    
+    // Buffer overflow protection
+    if (current_len + total_size >= MAX_RESPONSE_SIZE) {
+        size_t available_space = MAX_RESPONSE_SIZE - current_len;
+        if (available_space > 0) {
+            strncat(data, (char*)ptr, available_space);
+            data[MAX_RESPONSE_SIZE] = '\0';
+        }
+        return total_size;  // Return original size to avoid curl errors
+    }
+    
+    strncat(data, (char*)ptr, total_size);
+    return total_size;
 }
 
 char* get_global_ip_robust() {
@@ -369,8 +467,8 @@ void get_local_ip(char *ip_str)
     // Iterate over the interfaces
     for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next)
     {
-        // Check if the interface is an IPv4 address
-        if (ifa->ifa_addr->sa_family == AF_INET)
+        // Check if the interface is an IPv4 address (with NULL check)
+        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET)
         {
             sa = (struct sockaddr_in *)ifa->ifa_addr;
             ip_address = inet_ntoa(sa->sin_addr);
@@ -378,7 +476,9 @@ void get_local_ip(char *ip_str)
             if (strcmp(ifa->ifa_name, "lo") != 0)
             { // Exclude loopback
                 printf("Local IP address of interface %s: %s\n", ifa->ifa_name, ip_address);
-                strcpy(ip_str, ip_address);
+                // Safe string copy with bounds checking
+                strncpy(ip_str, ip_address, 99);  // Assume ip_str is at least 100 bytes
+                ip_str[99] = '\0';
                 break; // Print the first non-loopback IP address
             }
         }
@@ -444,9 +544,10 @@ static gpointer update_external_ip_thread(gpointer data)
     if (global_ip) {
         char *new_ip = g_strdup_printf("%s:%d", global_ip, config->http_service_port);
         
-        // 스레드 안전하게 IP 주소 교체
-        g_free(g_atomic_pointer_get(&config->http_service_ip));
+        // 스레드 안전하게 IP 주소 교체 (race condition 방지)
+        gchar *old_ip = g_atomic_pointer_get(&config->http_service_ip);
         g_atomic_pointer_set(&config->http_service_ip, new_ip);
+        g_free(old_ip);
         
         glog_trace("Updated http_service_ip to external (async): %s", new_ip);
         

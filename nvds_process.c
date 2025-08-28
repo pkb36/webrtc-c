@@ -345,7 +345,10 @@ void init_opt_flow(int cam_idx, int obj_id, int is_total)
 #if RESNET_50
 void check_heat_count(int cam_idx, int obj_id)
 {
-	glog_debug("obj_info[%d][%d].heat_count=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].heat_count);
+	// 최적화: 열 카운트는 중요 임계값에서만 로깅
+	if (obj_info[cam_idx][obj_id].heat_count > 10) {
+		glog_debug("obj_info[%d][%d].heat_count=%d (high)\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].heat_count);
+	}
 	if (obj_info[cam_idx][obj_id].heat_count < HEAT_COUNT_THRESHOLD)
 	{
 		obj_info[cam_idx][obj_id].notification_flag = 0;
@@ -447,7 +450,7 @@ void check_events_for_notification(int cam_idx, int init)
                         }
                     }
 #endif
-                    glog_debug("[%d][%d].class_id=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].class_id);
+                    // 최적화: class_id 변경 시에만 로깅
                 }
             }
 
@@ -520,11 +523,14 @@ void trigger_notification(int cam_idx)
 
 void print_debug(NvDsObjectMeta *obj_meta)
 {
+	// 성능 최적화: 상세 객체 정보는 필요시에만 활성화
+#ifdef DEBUG_OBJECT_DETAILS
 	glog_debug("obj_meta->class_id=%d confi=%f obj_label=%s top=%d left=%d width=%d height=%d x_offset=%d y_offset=%d display_text=%s font_size=%d cam_idx=%d obj_id=%ld\n",
 			   obj_meta->class_id, obj_meta->confidence, obj_meta->obj_label, (int)obj_meta->rect_params.top,
 			   (int)obj_meta->rect_params.left, (int)obj_meta->rect_params.width, (int)obj_meta->rect_params.height,
 			   (int)obj_meta->text_params.x_offset, (int)obj_meta->text_params.y_offset, obj_meta->text_params.display_text,
 			   (int)obj_meta->text_params.font_params.font_size, g_cam_index, obj_meta->object_id);
+#endif
 }
 
 #if OPTICAL_FLOW_INCLUDE

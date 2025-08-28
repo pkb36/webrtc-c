@@ -1,4 +1,4 @@
-#include "log_wrapper.h"
+#include "unified_log.h"
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -65,7 +65,7 @@ static gboolean check_and_rotate_log_file(gpointer user_data) {
     return G_SOURCE_CONTINUE; // 타이머 계속 실행
 }
 
-void init_logging(const char* program_name) {
+void LOG_INIT(const char* program_name) {
     // logs 디렉토리 생성
     system("mkdir -p ./logs");
     

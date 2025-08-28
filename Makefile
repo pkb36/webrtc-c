@@ -18,16 +18,15 @@ $(shell mkdir -p $(BUILD_DIR) $(OBJ_DIR))
 
 DEST_DIR ?= /home/nvidia/webrtc
 
-# 오브젝트 파일들
-COMMON_OBJS := $(OBJ_DIR)/log.o $(OBJ_DIR)/log_wrapper.o
+# 오브젝트 파일들 (통합된 로그 시스템 사용)
+COMMON_OBJS := $(OBJ_DIR)/unified_log.o
 GSTREAM_OBJS := $(OBJ_DIR)/gstream_main.o $(OBJ_DIR)/config.o $(OBJ_DIR)/serial_comm.o $(OBJ_DIR)/socket_comm.o \
                 $(OBJ_DIR)/webrtc_peer.o $(OBJ_DIR)/process_cmd.o $(OBJ_DIR)/json_utils.o $(OBJ_DIR)/command_handler.o \
                 $(OBJ_DIR)/gstream_control.o $(OBJ_DIR)/curllib.o $(OBJ_DIR)/device_setting.o $(OBJ_DIR)/nvds_process.o \
-                $(OBJ_DIR)/nvds_utils.o $(OBJ_DIR)/ptz_control.o $(OBJ_DIR)/circular_buffer.o $(OBJ_DIR)/tegrastats_monitor.o $(OBJ_DIR)/thread_safe_queue.o
+                $(OBJ_DIR)/nvds_utils.o $(OBJ_DIR)/ptz_control.o $(OBJ_DIR)/circular_buffer.o $(OBJ_DIR)/thread_safe_queue.o
 
 # 최종 실행파일들
-TARGETS := $(BUILD_DIR)/gstream_main $(BUILD_DIR)/webrtc_sender \
-           $(BUILD_DIR)/disk_check $(BUILD_DIR)/curllib_test
+TARGETS := $(BUILD_DIR)/gstream_main $(BUILD_DIR)/webrtc_sender
 
 # 기본 타겟
 all: $(TARGETS)
@@ -47,14 +46,8 @@ $(BUILD_DIR)/gstream_main: $(GSTREAM_OBJS) $(COMMON_OBJS)
 $(BUILD_DIR)/webrtc_sender: $(OBJ_DIR)/webrtc_sender.o $(OBJ_DIR)/socket_comm.o $(COMMON_OBJS)
 	"$(CC)" $(CFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/disk_check: $(OBJ_DIR)/disk_check.o $(COMMON_OBJS)
-	"$(CC)" $(CFLAGS) $^ $(LIBS) -o $@
-
 # 테스트 프로그램들 (선택사항)
 $(BUILD_DIR)/json_test: $(OBJ_DIR)/json_test.o
-	"$(CC)" $(CFLAGS) $^ $(LIBS) -o $@
-
-$(BUILD_DIR)/curllib_test: $(OBJ_DIR)/curllib_test.o $(OBJ_DIR)/curllib.o $(OBJ_DIR)/json_utils.o $(COMMON_OBJS)
 	"$(CC)" $(CFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/settting_test: $(OBJ_DIR)/device_setting.o $(OBJ_DIR)/serial_comm.o
@@ -67,16 +60,12 @@ $(BUILD_DIR)/log_test: $(COMMON_OBJS)
 install: $(TARGETS)
 	cp $(BUILD_DIR)/gstream_main ./
 	cp $(BUILD_DIR)/webrtc_sender ./
-	cp $(BUILD_DIR)/curllib_test ./
-	cp $(BUILD_DIR)/disk_check ./
 
 install-to: $(TARGETS)
 	@echo "Installing to $(DEST_DIR)..."
 	@mkdir -p $(DEST_DIR)
 	cp $(BUILD_DIR)/gstream_main $(DEST_DIR)/
 	cp $(BUILD_DIR)/webrtc_sender $(DEST_DIR)/
-	cp $(BUILD_DIR)/curllib_test $(DEST_DIR)/
-	cp $(BUILD_DIR)/disk_check $(DEST_DIR)/
 	cp $(PYTHON_DIR)/camera.py $(DEST_DIR)/
 	cp $(PYTHON_DIR)/disk_manager.py $(DEST_DIR)/
 	@echo "Installation complete!"
@@ -84,7 +73,14 @@ install-to: $(TARGETS)
 # 정리
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f gstream_main webrtc_sender disk_check curllib_test
+	rm -f gstream_main webrtc_sender
+
+# 로그 시스템 정리를 위한 추가 타겟
+clean-logs:
+	rm -rf ./logs
+	
+# 완전 정리 (빌드 파일 + 로그 파일)
+clean-all: clean clean-logs
 
 # 의존성 관리 (옵션)
-.PHONY: all clean install
+.PHONY: all clean clean-logs clean-all install install-to
