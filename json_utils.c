@@ -39,6 +39,34 @@ cockpit_json_get_string (JsonObject *options,
     }
 }
 
+gboolean
+cockpit_json_get_int (JsonObject *options,
+                      const gchar *name,
+                      int default_value,
+                      int *value, gboolean required)
+{
+  JsonNode *node;
+
+  node = json_object_get_member (options, name);
+  if (!node)
+    {
+      if (value)
+        *value = default_value;
+      return !required;
+    }
+  else if (json_node_get_value_type (node) == G_TYPE_INT64)
+    {
+      if (value)
+        *value = (int)json_node_get_int(node);
+      return TRUE;
+    }
+  else
+    {
+      if (value)
+        *value = default_value;
+      return FALSE;
+    }
+}
 
 static gchar *
 get_string_from_json_object (JsonObject * object)

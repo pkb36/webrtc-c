@@ -13,7 +13,7 @@ server ip address
 
 #include "curllib.h"
 #include "json_utils.h"
-#include "log_wrapper.h"
+#include "logging.h"
 
 struct MemoryStruct {
     char *memory;

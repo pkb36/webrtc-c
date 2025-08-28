@@ -33,7 +33,7 @@
 #include "nvds_process.h"
 #include "nvds_utils.h"
 #include "ptz_control.h"
-#include "log_wrapper.h"
+#include "logging.h"
 #include "command_handler.h"
 
 #include <unistd.h> // write, close 등을 위해 추가
@@ -858,8 +858,8 @@ static void on_server_message(SoupWebsocketConnection *conn, SoupWebsocketDataTy
         }
         else
         {
-            // 기존 방식으로 처리
-            process_message_cmd(jsonObj);
+            // 개선된 테이블 기반 처리
+            process_message_cmd_improved(jsonObj);
         }
         pthread_mutex_unlock(&g_process_msg_mutex);
     }
@@ -1541,7 +1541,7 @@ int main(int argc, char *argv[])
     pthread_mutex_destroy(&g_send_mutex);
     pthread_mutex_destroy(&g_process_msg_mutex);
 
-    cleanup_logging();
+    logging_cleanup();
 
     return 0;
 }

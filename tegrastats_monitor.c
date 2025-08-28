@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <errno.h>
-#include "log_wrapper.h"
+#include "logging.h"
 #include "tegrastats_monitor.h"
 
 // tegrastats 출력 파싱 함수 - 수정된 버전

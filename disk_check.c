@@ -5,7 +5,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
-#include "log_wrapper.h"
+#include "logging.h"
 
 #define MAX_DELETE_COUNT 	50
 

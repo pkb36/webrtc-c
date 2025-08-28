@@ -9,7 +9,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#include "log_wrapper.h"
+#include "logging.h"
 #include <json-glib/json-glib.h>
 #include "device_setting.h"
 #include "serial_comm.h"

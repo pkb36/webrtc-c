@@ -9,7 +9,7 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include "socket_comm.h"
-#include "log_wrapper.h"
+#include "logging.h"
 #include "device_setting.h"
 #include "curllib.h"
 #include "config.h"

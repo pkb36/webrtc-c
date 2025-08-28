@@ -530,3 +530,18 @@ void set_file_permissions(const char* filepath) {
         }
     }
 }
+
+// 이벤트 관련 추가 함수들
+void init_circular_buffer(void) {
+    init_all_circular_buffers();
+}
+
+void cleanup_circular_buffer(void) {
+    cleanup_all_circular_buffers();
+}
+
+void add_event_to_buffer(int class_id, int camera_id) {
+    // 이벤트 발생 시점 기록
+    double event_time = g_get_real_time() / 1000000.0;
+    on_event_detected(camera_id, class_id, event_time);
+}

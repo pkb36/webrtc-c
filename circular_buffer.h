@@ -65,4 +65,9 @@ void save_codec_data(int camera_id, GstCaps *caps);
 void set_event_save_callback(EventSaveCallback callback, void *user_data);
 void set_file_permissions(const char* filepath);
 
+// 이벤트 관련 추가 함수들
+void init_circular_buffer(void);
+void cleanup_circular_buffer(void);
+void add_event_to_buffer(int class_id, int camera_id);
+
 #endif // CIRCULAR_BUFFER_H

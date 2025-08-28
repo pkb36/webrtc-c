@@ -3,7 +3,7 @@
 
 #include <gst/gst.h>
 #include "json_utils.h"
-#include "log_wrapper.h"
+#include "logging.h"
 #include "version.h"
 #include "global_define.h"
 
@@ -94,6 +94,7 @@ void send_msg_server(const gchar *msg);
 int execute_process(char *cmd, gboolean check_id);
 
 gboolean process_message_cmd(gJSONObj *jsonObj);
+gboolean process_message_cmd_improved(gJSONObj *jsonObj);
 
 gboolean apply_setting();
 gboolean cleanup_and_retry_connect(const gchar *msg, enum AppState state);

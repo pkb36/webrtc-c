@@ -26,7 +26,8 @@
 #include "nvds_process.h"
 #include "ptz_control.h"
 #include "tegrastats_monitor.h"
-#include "log_wrapper.h"
+#include "logging.h"
+#include "gstream_control.h"
 
 extern WebRTCConfig g_config;
 extern CurlIinfoType g_curlinfo;

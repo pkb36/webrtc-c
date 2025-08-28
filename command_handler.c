@@ -9,7 +9,7 @@
 #include <errno.h>
 #include "command_handler.h"
 #include "json_utils.h"
-#include "log_wrapper.h"
+#include "logging.h"
 
 // 안전한 명령어 실행 함수 (extern으로 변경)
 char* execute_safe_command(const char* command) {

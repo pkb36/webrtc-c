@@ -4,7 +4,8 @@ LIBS   := $(shell pkg-config --libs --cflags glib-2.0 gstreamer-1.0 gstreamer-sd
 CFLAGS := -O0 -ggdb -Wall -fno-omit-frame-pointer -I/opt/nvidia/deepstream/deepstream/sources/includes \
 		$(shell pkg-config --cflags glib-2.0 gstreamer-1.0 gstreamer-sdp-1.0 gstreamer-webrtc-1.0 json-glib-1.0 libsoup-2.4)
 
-NVDS_VERSION:=6.2
+# NVDS_VERSION:=6.2
+NVDS_VERSION:=7.1
 LIB_INSTALL_DIR?=/opt/nvidia/deepstream/deepstream-$(NVDS_VERSION)/lib/
 LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lm -Wl,-rpath,$(LIB_INSTALL_DIR)
 
@@ -18,12 +19,13 @@ $(shell mkdir -p $(BUILD_DIR) $(OBJ_DIR))
 
 DEST_DIR ?= /home/nvidia/webrtc
 
-# 오브젝트 파일들
-COMMON_OBJS := $(OBJ_DIR)/log.o $(OBJ_DIR)/log_wrapper.o
+# 오브젝트 파일들  
+COMMON_OBJS := $(OBJ_DIR)/logging.o
 GSTREAM_OBJS := $(OBJ_DIR)/gstream_main.o $(OBJ_DIR)/config.o $(OBJ_DIR)/serial_comm.o $(OBJ_DIR)/socket_comm.o \
                 $(OBJ_DIR)/webrtc_peer.o $(OBJ_DIR)/process_cmd.o $(OBJ_DIR)/json_utils.o $(OBJ_DIR)/command_handler.o \
-                $(OBJ_DIR)/gstream_control.o $(OBJ_DIR)/curllib.o $(OBJ_DIR)/device_setting.o $(OBJ_DIR)/nvds_process.o \
-                $(OBJ_DIR)/nvds_utils.o $(OBJ_DIR)/ptz_control.o $(OBJ_DIR)/circular_buffer.o $(OBJ_DIR)/tegrastats_monitor.o
+                $(OBJ_DIR)/gstream_control.o $(OBJ_DIR)/protocol_handler.o $(OBJ_DIR)/curllib.o $(OBJ_DIR)/device_setting.o \
+                $(OBJ_DIR)/nvds_process.o $(OBJ_DIR)/nvds_utils.o $(OBJ_DIR)/ptz_control.o $(OBJ_DIR)/circular_buffer.o \
+                $(OBJ_DIR)/tegrastats_monitor.o $(OBJ_DIR)/nvds_optical_flow.o $(OBJ_DIR)/nvds_temperature.o $(OBJ_DIR)/nvds_event.o
 
 # 최종 실행파일들
 TARGETS := $(BUILD_DIR)/gstream_main $(BUILD_DIR)/webrtc_sender \

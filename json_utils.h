@@ -26,6 +26,11 @@ gboolean    cockpit_json_get_string (JsonObject *options,
                          const gchar *defawlt,
                          const gchar **value, gboolean dump_string);
 
+gboolean    cockpit_json_get_int (JsonObject *options,
+                        const gchar *name,
+                         int default_value,
+                         int *value, gboolean required);
+
 
 #ifdef USE_JSON_MESSAGE_TEMPLATE
 

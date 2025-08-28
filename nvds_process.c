@@ -24,6 +24,9 @@
 #include "gstream_main.h"
 #include "gstnvdsmeta.h"
 #include "nvds_process.h"
+#include "nvds_optical_flow.h"
+#include "nvds_temperature.h"
+#include "nvds_event.h"
 #include "curllib.h"
 #include "device_setting.h"
 #include "nvds_opticalflow_meta.h"
@@ -31,6 +34,7 @@
 #include "circular_buffer.h"
 #include "ptz_control.h"
 #include "serial_comm.h"
+#include "logging.h"
 
 static int *g_cam_indices = NULL;
 #define MAX_OPT_FLOW_ITERATIONS 1000
@@ -114,26 +118,6 @@ static gboolean event_recording_timeout(gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
-void set_tracker_analysis(gboolean OnOff)
-{
-	char element_name[32];
-
-	for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
-	{
-		GstElement *dspostproc;
-		sprintf(element_name, "dspostproc_%d", cam_idx + 1);
-		dspostproc = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
-		if (dspostproc == NULL)
-		{
-			glog_trace("Fail get %s element\n", element_name);
-			continue;
-		}
-
-		gboolean rest_val = OnOff ? FALSE : TRUE;
-		g_object_set(G_OBJECT(dspostproc), "reset-object", rest_val, NULL);
-		g_clear_object(&dspostproc);
-	}
-}
 
 BboxColor get_object_color(guint camera_id, guint object_id, gint class_id)
 {
@@ -186,259 +170,14 @@ BboxColor get_object_color(guint camera_id, guint object_id, gint class_id)
 	}
 }
 
-void set_process_analysis(gboolean OnOff)
-{
-	printf("set_process_analysis OnOff=%d\n", OnOff);
-	if (OnOff == 0)
-		check_events_for_notification(0, 1);
 
-	gboolean all_success = TRUE;
 
-	for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
-	{
-		char element_name[32];
-		GstElement *nvinfer;
-		sprintf(element_name, "nvinfer_%d", cam_idx + 1);
-		nvinfer = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
-		if (nvinfer == NULL)
-		{
-			glog_trace("Fail get %s element\n", element_name);
-			continue;
-		}
 
-		gint interval = OnOff ? g_setting.nv_interval : G_MAXINT;
-		g_object_set(G_OBJECT(nvinfer), "interval", interval, NULL);
-		g_clear_object(&nvinfer);
 
-		GstElement *dspostproc = NULL;
 
-		// dspostproc 처리
-		sprintf(element_name, "dspostproc_%d", cam_idx + 1);
-		dspostproc = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
-		if (dspostproc)
-		{
-			gboolean reset_val = OnOff ? FALSE : TRUE;
-			g_object_set(G_OBJECT(dspostproc), "reset-object", reset_val, NULL);
-			g_clear_object(&dspostproc);
-		}
-		else
-		{
-			glog_error("Failed to get %s element\n", element_name);
-			all_success = FALSE;
-		}
-	}
 
-	printf("set_process_analysis: OnOff=%d, all_success=%d\n", OnOff, all_success);
 
-	if (!all_success)
-	{
-		glog_error("Some elements failed to update\n");
-	}
-}
 
-int is_process_running(const char *process_name)
-{
-	char command[256];
-
-	snprintf(command, sizeof(command), "ps aux | grep '%s' | grep -v grep", process_name);
-	FILE *fp = popen(command, "r");
-	if (fp == NULL)
-	{
-		perror("popen");
-		return -1;
-	}
-	// Check if there's any output from the command
-	char buffer[256];
-	while (fgets(buffer, sizeof(buffer), fp) != NULL)
-	{
-		// If we read a line, the process is running
-		fclose(fp);
-		return 1; // Process is running
-	}
-	fclose(fp);
-	return 0; // Process is not running
-}
-
-gboolean send_event_to_recorder_simple(int class_id, int camera_id)
-{
-	// const AutoPTZState *ptz_state = get_auto_ptz_state();
-
-	struct timespec ts;
-	clock_gettime(CLOCK_REALTIME, &ts);
-	double event_time = ts.tv_sec + ts.tv_nsec / 1e9;
-
-	double time_diff = event_time - g_event_throttle.last_event_time[class_id][camera_id];
-
-	// if (ptz_state->is_running == FALSE && time_diff < g_event_throttle.throttle_interval) {
-	if (time_diff < g_event_throttle.throttle_interval)
-	{
-		// 너무 빈번한 이벤트는 필터링
-		glog_debug("Event filtered: class=%d, camera=%d, time_diff=%.1f\n",
-				   class_id, camera_id, time_diff);
-		return FALSE;
-	}
-
-	on_event_detected(camera_id, class_id, event_time);
-
-	g_event_throttle.last_event_time[class_id][camera_id] = event_time;
-
-	return TRUE;
-}
-
-int send_notification_to_server(int class_id)
-{
-	glog_trace("try sending class_id=%d, enable_event_notify=%d\n", class_id, g_setting.enable_event_notify);
-
-	if (g_setting.enable_event_notify)
-	{
-		g_event_recording = 1;
-		g_timeout_add_seconds(30, event_recording_timeout, NULL);
-
-		if (send_event_to_recorder_simple(class_id, g_noti_cam_idx) == TRUE)
-		{
-			glog_trace("send_event_to_recorder_simple cam_idx=%d,class_id=%d\n", g_noti_cam_idx, class_id);
-			return TRUE;
-		}
-	}
-
-	return FALSE;
-}
-
-void gather_event(int class_id, int obj_id, int cam_idx)
-{
-	if (obj_id < 0)
-		return;
-	if (class_id != CLASS_NORMAL_COW && class_id != CLASS_NORMAL_COW_SITTING)
-	{
-		obj_info[cam_idx][obj_id].detected_frame_count++;
-		obj_info[cam_idx][obj_id].class_id = class_id;
-	}
-}
-
-void init_opt_flow(int cam_idx, int obj_id, int is_total)
-{
-	if (g_setting.opt_flow_apply == 0)
-	{
-		return;
-	}
-
-	obj_info[cam_idx][obj_id].opt_flow_check_count = 0;
-	obj_info[cam_idx][obj_id].move_size_avg = 0.0;
-	obj_info[cam_idx][obj_id].do_opt_flow = 0;
-	if (is_total)
-	{
-		obj_info[cam_idx][obj_id].opt_flow_detected_count = 0;
-		obj_info[cam_idx][obj_id].prev_x = 0;
-		obj_info[cam_idx][obj_id].prev_y = 0;
-		obj_info[cam_idx][obj_id].prev_width = 0;
-		obj_info[cam_idx][obj_id].prev_height = 0;
-		obj_info[cam_idx][obj_id].x = 0;
-		obj_info[cam_idx][obj_id].y = 0;
-		obj_info[cam_idx][obj_id].width = 0;
-		obj_info[cam_idx][obj_id].height = 0;
-	}
-}
-
-#if RESNET_50
-void check_heat_count(int cam_idx, int obj_id)
-{
-	glog_debug("obj_info[%d][%d].heat_count=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].heat_count);
-	if (obj_info[cam_idx][obj_id].heat_count < HEAT_COUNT_THRESHOLD)
-	{
-		obj_info[cam_idx][obj_id].notification_flag = 0;
-	}
-	obj_info[cam_idx][obj_id].heat_count = 0;
-}
-#endif
-
-void check_events_for_notification(int cam_idx, int init)
-{
-	if (init)
-	{
-		for (int i = 0; i < NUM_CAMS; i++)
-		{
-			for (int j = 0; j < NUM_OBJS; j++)
-			{
-				obj_info[i][j].detected_frame_count = 0;
-				obj_info[i][j].duration = 0;
-				obj_info[i][j].temp_duration = 0;
-				obj_info[i][j].class_id = CLASS_NORMAL_COW;
-#if RESNET_50
-				obj_info[i][j].heat_count = 0;
-#endif
-				init_opt_flow(i, j, 1);
-			}
-		}
-		return;
-	}
-
-	for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
-	{
-		if (obj_info[cam_idx][obj_id].detected_frame_count >= (PER_CAM_SEC_FRAME - 1))
-		{ // if detection continued one second
-			// glog_trace("cam_idx=%d, obj_id=%d detected_frame_count=%d duration=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].detected_frame_count, obj_info[cam_idx][obj_id].duration);
-			obj_info[cam_idx][obj_id].duration++;
-			if (obj_info[cam_idx][obj_id].duration >= threshold_event_duration[obj_info[cam_idx][obj_id].class_id])
-			{ // if duration lasted more than designated time
-				obj_info[cam_idx][obj_id].duration = 0;
-				// check_for_zoomin(g_total_rect_size, detect_count);      //LJH, in progress
-				obj_info[cam_idx][obj_id].notification_flag = 1; // send notification later
-
-				if ((obj_info[cam_idx][obj_id].class_id == CLASS_FLIP_COW ||
-					 obj_info[cam_idx][obj_id].class_id == CLASS_LABOR_SIGN_COW) &&
-					cam_idx == RGB_CAM)
-				{
-					printf("Starting cow tracking for obj_id=%d, class_id=%d\n", obj_id, obj_info[cam_idx][obj_id].class_id);
-
-					start_cow_tracking(
-						obj_id,
-						obj_info[cam_idx][obj_id].class_id,
-						obj_info[cam_idx][obj_id].x,
-						obj_info[cam_idx][obj_id].y,
-						obj_info[cam_idx][obj_id].width,
-						obj_info[cam_idx][obj_id].height);
-				}
-
-#if RESNET_50
-				if (g_setting.resnet50_apply)
-				{
-					if (obj_info[cam_idx][obj_id].class_id == CLASS_HEAT_COW)
-					{
-						check_heat_count(cam_idx, obj_id); // LJH, if heat count is zero, notification is cancelled
-					}
-				}
-#endif
-				glog_debug("[%d][%d].class_id=%d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].class_id);
-			}
-
-			if (g_setting.opt_flow_apply)
-			{
-				if (obj_info[cam_idx][obj_id].class_id == CLASS_FLIP_COW)
-				{											   // if event was flip do optical flow analysis
-					obj_info[cam_idx][obj_id].do_opt_flow = 1; // if detected frame count lasted equal or more than one second then do optical flow analysis
-				}
-				else
-				{
-					init_opt_flow(cam_idx, obj_id, 0);
-				}
-			}
-		}
-		else
-		{ // if detection not continued for one second
-			obj_info[cam_idx][obj_id].duration = 0;
-			init_opt_flow(cam_idx, obj_id, 1);
-		}
-		obj_info[cam_idx][obj_id].detected_frame_count = 0;
-	}
-}
-
-int get_opt_flow_result(int cam_idx, int obj_id)
-{
-	glog_debug("[%d][%d].confi=%.2f opt_flow_detected_count ==> %d\n", cam_idx, obj_id, obj_info[cam_idx][obj_id].confidence, obj_info[cam_idx][obj_id].opt_flow_detected_count);
-	if (obj_info[cam_idx][obj_id].opt_flow_detected_count >= THRESHOLD_OVER_OPTICAL_FLOW_COUNT)
-		return 1;
-	return 0;
-}
 
 #if 0
 #define NOTICATION_TIME_GAP 60       
@@ -463,38 +202,6 @@ int get_time_gap_result(int preset)               //need to apply to objects
 }
 #endif
 
-void trigger_notification(int cam_idx)
-{
-	for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
-	{
-		if (obj_info[cam_idx][obj_id].notification_flag)
-		{
-			obj_info[cam_idx][obj_id].notification_flag = 0;
-			g_event_class_id = obj_info[cam_idx][obj_id].class_id;
-			glog_trace("[15SEC] notification_flag==1,cam_idx=%d,obj_id=%d,g_event_class_id=%d,g_preset_index=%d\n", cam_idx, obj_id, g_event_class_id, g_preset_index);
-#if OPTICAL_FLOW_INCLUDE
-			if (g_setting.opt_flow_apply)
-			{
-				if (g_event_class_id == CLASS_FLIP_COW)
-				{
-					glog_trace("[15SEC] g_event_class_id==CLASS_FLIP_COW\n");
-					if (get_opt_flow_result(cam_idx, obj_id) == 0)
-					{
-						glog_trace("[15SEC] get_opt_flow_result(cam_idx=%d,obj_id=%d) ==> 0\n", cam_idx, obj_id);
-						init_opt_flow(cam_idx, obj_id, 1);
-						continue;
-					}
-					init_opt_flow(cam_idx, obj_id, 1);
-					glog_trace("[15SEC] get_opt_flow_result(cam_idx=%d,obj_id=%d) ==> 1\n", cam_idx, obj_id);
-				}
-			}
-#endif
-			g_noti_cam_idx = g_cam_index;
-			glog_trace("[[[NOTIFICATION]]] [%d][%d].confi=%.2f,g_source_cam_idx=%d,g_noti_cam_idx=%d,g_event_class_id=%d \n", cam_idx, obj_id, obj_info[cam_idx][obj_id].confidence, g_source_cam_idx, g_noti_cam_idx, g_event_class_id);
-			obj_info[cam_idx][obj_id].temp_event_time_gap = TEMP_EVENT_TIME_GAP;
-		}
-	}
-}
 
 void print_debug(NvDsObjectMeta *obj_meta)
 {
@@ -507,70 +214,12 @@ void print_debug(NvDsObjectMeta *obj_meta)
 
 #if OPTICAL_FLOW_INCLUDE
 
-int get_opt_flow_object(int cam_idx, int start_obj_id)
-{
-	for (int obj_id = start_obj_id; obj_id < NUM_OBJS; obj_id++)
-	{
-		if (obj_info[cam_idx][obj_id].do_opt_flow)
-		{ // if do_opt_flow is set, then it means that it is heat state
-			return obj_id;
-		}
-	}
 
-	return -1;
-}
 
-double update_average(double previous_average, int count, double new_value)
-{
-	return ((previous_average * (count - 1)) + new_value) / count;
-}
 
-int get_correction_value(double diagonal)
-{
-	int corr_value = 0; // Initialize to a default value
 
-	// If diagonal is less than or equal to SMALL_BBOX_DIAGONAL, calculate the correction value
-	if (diagonal <= SMALL_BBOX_DIAGONAL)
-	{
-		corr_value = (int)(((SMALL_BBOX_DIAGONAL - diagonal) / 10) + 1);
-	}
 
-	return corr_value;
-}
 
-int get_move_distance(int cam_idx, int obj_id)
-{
-	if (obj_info[cam_idx][obj_id].prev_x == 0 || obj_info[cam_idx][obj_id].prev_y == 0)
-		return 0;
-
-	int x_dist = abs(obj_info[cam_idx][obj_id].prev_x - obj_info[cam_idx][obj_id].x);
-	int y_dist = abs(obj_info[cam_idx][obj_id].prev_y - obj_info[cam_idx][obj_id].y);
-
-	return (int)calculate_sqrt((double)x_dist, (double)y_dist);
-}
-
-int get_rect_size_change(int cam_idx, int obj_id)
-{
-	if (obj_info[cam_idx][obj_id].prev_width == 0 || obj_info[cam_idx][obj_id].prev_height == 0)
-		return 0;
-
-	int width_change = abs(obj_info[cam_idx][obj_id].prev_width - obj_info[cam_idx][obj_id].width);
-	int height_change = abs(obj_info[cam_idx][obj_id].prev_height - obj_info[cam_idx][obj_id].height);
-
-	return (int)calculate_sqrt((double)width_change, (double)height_change);
-}
-
-void set_prev_xy(int cam_idx, int obj_id)
-{
-	obj_info[cam_idx][obj_id].prev_x = obj_info[cam_idx][obj_id].x;
-	obj_info[cam_idx][obj_id].prev_y = obj_info[cam_idx][obj_id].y;
-}
-
-void set_prev_rect_size(int cam_idx, int obj_id)
-{
-	obj_info[cam_idx][obj_id].prev_width = obj_info[cam_idx][obj_id].width;
-	obj_info[cam_idx][obj_id].prev_height = obj_info[cam_idx][obj_id].height;
-}
 
 int get_flip_color_over_threshold(int cam_idx, int obj_id)
 {
@@ -600,154 +249,6 @@ int get_heat_color_over_threshold(int cam_idx, int obj_id)
 	return RED_COLOR;
 }
 
-void process_opt_flow(NvDsFrameMeta *frame_meta, int cam_idx, int obj_id, int cam_sec_interval)
-{
-	if (obj_id < 0)
-		return;
-
-	int count = 0;
-	double move_size = 0.0, move_size_total = 0.0, move_size_avg = 0.0;
-	double diagonal = 0;
-	int row_start = 0, col_start = 0, row_num = 0, col_num = 0;
-	int rows = 0, cols = 0; // rows 추가
-	int corr_value = 0;
-	int bbox_move = 0, rect_size_change = 0;
-
-	// glog_trace("[process_opt_flow] START - cam_idx=%d, obj_id=%d\n", cam_idx, obj_id);
-
-	for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user != NULL; l_user = l_user->next)
-	{
-		NvDsUserMeta *user_meta = (NvDsUserMeta *)(l_user->data);
-
-		if (user_meta->base_meta.meta_type == NVDS_OPTICAL_FLOW_META)
-		{
-			// glog_trace("[process_opt_flow] Found optical flow metadata\n");
-
-			NvDsOpticalFlowMeta *opt_flow_meta = (NvDsOpticalFlowMeta *)(user_meta->user_meta_data);
-
-			if (!opt_flow_meta || !opt_flow_meta->data)
-			{
-				glog_error("[process_opt_flow] ERROR: NULL metadata!\n");
-				continue;
-			}
-
-			rows = opt_flow_meta->rows; // ✅ rows 값 저장
-			cols = opt_flow_meta->cols;
-			NvOFFlowVector *flow_vectors = (NvOFFlowVector *)(opt_flow_meta->data);
-
-			// glog_trace("[process_opt_flow] Flow grid: rows=%d, cols=%d, total_size=%d\n",
-			//            rows, cols, rows * cols);
-
-			// ✅ 좌표 변환 수정: x는 column, y는 row
-			col_start = obj_info[cam_idx][obj_id].x / 4;	// x → col
-			row_start = obj_info[cam_idx][obj_id].y / 4;	// y → row
-			col_num = obj_info[cam_idx][obj_id].width / 4;	// width → col 개수
-			row_num = obj_info[cam_idx][obj_id].height / 4; // height → row 개수
-
-			// ✅ 경계 체크 및 조정
-			if (col_start < 0)
-				col_start = 0;
-			if (row_start < 0)
-				row_start = 0;
-			if (col_start >= cols)
-				col_start = cols - 1;
-			if (row_start >= rows)
-				row_start = rows - 1;
-
-			if (col_start + col_num > cols)
-				col_num = cols - col_start;
-			if (row_start + row_num > rows)
-				row_num = rows - row_start;
-
-			// glog_trace("[process_opt_flow] Adjusted bounds: row[%d-%d), col[%d-%d)\n",
-			//            row_start, row_start + row_num, col_start, col_start + col_num);
-
-			diagonal = obj_info[cam_idx][obj_id].diagonal;
-			move_size_total = 0.0;
-			count = 0;
-
-			// Process the motion vectors
-			for (int row = row_start; row < (row_start + row_num) && row < rows; ++row)
-			{
-				for (int col = col_start; col < (col_start + col_num) && col < cols; ++col)
-				{
-					int index = row * cols + col;
-					int max_index = rows * cols;
-
-					if (index < 0 || index >= max_index)
-					{
-						glog_error("[process_opt_flow] Index still out of bounds! index=%d, max=%d\n",
-								   index, max_index);
-						continue;
-					}
-
-					NvOFFlowVector flow_vector = flow_vectors[index];
-					move_size = calculate_sqrt(flow_vector.flowx, flow_vector.flowy);
-					move_size_total += move_size;
-					count++;
-				}
-			}
-
-			// glog_trace("[process_opt_flow] Processed %d flow vectors\n", count);
-
-			if (count > 0)
-			{
-				move_size_avg = move_size_total / (double)count;
-				obj_info[cam_idx][obj_id].opt_flow_check_count++;
-				obj_info[cam_idx][obj_id].move_size_avg = update_average(
-					obj_info[cam_idx][obj_id].move_size_avg,
-					obj_info[cam_idx][obj_id].opt_flow_check_count,
-					move_size_avg);
-			}
-
-			if (cam_sec_interval)
-			{
-				bbox_move = get_move_distance(cam_idx, obj_id);
-				rect_size_change = get_rect_size_change(cam_idx, obj_id);
-				set_prev_xy(cam_idx, obj_id);
-				set_prev_rect_size(cam_idx, obj_id);
-
-				if (obj_info[cam_idx][obj_id].move_size_avg > 0)
-				{
-					glog_trace("[SEC] [%d][%d].move_size_avg=%.1f,confi=%.2f,diag=%.1f\n",
-							   cam_idx, obj_id,
-							   obj_info[cam_idx][obj_id].move_size_avg,
-							   obj_info[cam_idx][obj_id].confidence,
-							   diagonal);
-				}
-
-				if (bbox_move < THRESHOLD_BBOX_MOVE &&
-					rect_size_change < THRESHOLD_RECT_SIZE_CHANGE &&
-					g_move_speed == 0)
-				{
-					corr_value = get_correction_value(diagonal);
-					if (cam_idx == RGB_CAM)
-					{
-						corr_value += 9;
-					}
-
-					if (obj_info[cam_idx][obj_id].move_size_avg >
-						(g_setting.opt_flow_threshold + corr_value))
-					{
-						obj_info[cam_idx][obj_id].opt_flow_detected_count++;
-						glog_trace("[%d][%d].opt_flow_detected_count ==> %d\n",
-								   cam_idx, obj_id,
-								   obj_info[cam_idx][obj_id].opt_flow_detected_count);
-					}
-				}
-				else
-				{
-					glog_trace("[SEC] bbox_move=%d,rect_size_change=%d,g_move_speed=%d\n",
-							   bbox_move, rect_size_change, g_move_speed);
-				}
-
-				init_opt_flow(cam_idx, obj_id, 0);
-			}
-		}
-	}
-
-	// glog_trace("[process_opt_flow] END\n");
-}
 
 #endif
 
@@ -806,416 +307,17 @@ void set_obj_rect_id(int cam_idx, NvDsObjectMeta *obj_meta, int cam_sec_interval
 }
 
 #if THERMAL_TEMP_INCLUDE
-void get_pixel_color(NvBufSurface *surface, guint batch_idx, guint x, guint y, unsigned char *r, unsigned char *g, unsigned char *b, unsigned char *a)
-{
-	if (!surface)
-	{
-		glog_error("[get_pixel_color] Surface is NULL\n");
-		return;
-	}
-
-	if (batch_idx >= surface->numFilled)
-	{
-		glog_error("[get_pixel_color] batch_idx %u exceeds numFilled %u\n",
-				   batch_idx, surface->numFilled);
-		return;
-	}
-
-	if (!surface->surfaceList)
-	{
-		glog_error("[get_pixel_color] surfaceList is NULL\n");
-		return;
-	}
-
-	NvBufSurfaceParams *params = &surface->surfaceList[batch_idx];
-
-	if (!params->dataPtr)
-	{
-		glog_error("[get_pixel_color] dataPtr is NULL for batch_idx %u\n", batch_idx);
-		return;
-	}
-
-	// Get the width, height, and color format of the surface
-	int width = params->width;
-	int height = params->height;
-	NvBufSurfaceColorFormat color_format = params->colorFormat;
-
-	// Check if the pixel coordinates are within the bounds
-	if (x >= width || y >= height)
-	{
-		printf("Pixel coordinates are out of bounds.\n");
-		return;
-	}
-
-	// Access the pixel data directly
-	unsigned char *pixel_data = (unsigned char *)params->dataPtr;
-
-	// Define the pixel size based on the color format
-	int pixel_size = 0;
-
-	switch (color_format)
-	{
-	case NVBUF_COLOR_FORMAT_RGBA:
-		pixel_size = 4; // RGBA format (4 bytes per pixel)
-		break;
-	case NVBUF_COLOR_FORMAT_BGR:
-		pixel_size = 3; // BGR format (3 bytes per pixel)
-		break;
-	case NVBUF_COLOR_FORMAT_NV12:
-		// For NV12, you'll need to handle both Y and UV planes separately.
-		printf("Pixel color extraction for NV12 is not implemented in this example.\n");
-		return;
-	default:
-		printf("Unsupported color format.\n");
-		return;
-	}
-
-	// Compute the offset for the pixel at (x, y)
-	int pixel_offset = (y * width + x) * pixel_size;
-
-	*r = pixel_data[pixel_offset];								 // Red value
-	*g = pixel_data[pixel_offset + 1];							 // Green value
-	*b = pixel_data[pixel_offset + 2];							 // Blue value
-	*a = (pixel_size == 4) ? pixel_data[pixel_offset + 3] : 255; // Alpha value (if RGBA)
-}
 
 // Define a function to map RGBA color to temp
-float map_rgba_to_temp(unsigned char r, unsigned char g, unsigned char b)
-{
-	// Define temp range (e.g., 0°C to 100°C)
-	float min_temp = 0.0f;	 // Minimum temp (for Blue)
-	float max_temp = 100.0f; // Maximum temp (for Red)
 
-	// Map the 'Red' channel to temp (simple approach)
-	// Assuming the color range is from blue (low temp) to red (high temp)
-	float temp = (r / 255.0f) * (max_temp - min_temp) + min_temp;
-
-	return temp;
-}
-
-float map_rgba_to_temp_livestock(unsigned char r, unsigned char g, unsigned char b)
-{
-	float brightness = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
-
-	// 베지어 곡선 제어점
-	// P0(0, 20), P1(0.3, 30), P2(0.7, 38), P3(1, 42)
-	float t = brightness;
-	float t2 = t * t;
-	float t3 = t2 * t;
-	float mt = 1.0f - t;
-	float mt2 = mt * mt;
-	float mt3 = mt2 * mt;
-
-	// 3차 베지어 곡선
-	float temp = 20.0f * mt3 +
-				 3.0f * 30.0f * mt2 * t +
-				 3.0f * 38.0f * mt * t2 +
-				 42.0f * t3;
-
-	return temp;
-}
 
 // Function to get RGBA color and map it to temp
-float get_pixel_temp(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
-{
-	// 단순히 밝기를 온도 지표로 사용
-	float brightness = (r + g + b) / 3.0f;
-
-	// 0-100 범위로 정규화 (실제 온도가 아닌 상대값)
-	return brightness * 100.0f / 255.0f;
-}
 
 // 전체 소들의 온도 통계 계산 (매 프레임)
-void calculate_herd_temperature_stats(HerdTempStats *stats)
-{
-	stats->avg_temp = 0;
-	stats->total_cows = 0;
-	stats->std_dev = 0;
 
-	float temp_sum = 0;
-	float temps[NUM_OBJS];
-	int count = 0;
 
-	// 유효한 온도를 가진 소만 포함
-	for (int i = 0; i < NUM_OBJS; i++)
-	{
-		// bbox_temp가 유효한 범위인지 확인
-		if (obj_info[THERMAL_CAM][i].bbox_temp > g_setting.threshold_under_temp &&
-			obj_info[THERMAL_CAM][i].bbox_temp < g_setting.threshold_upper_temp &&
-			obj_info[THERMAL_CAM][i].bbox_temp > 0)
-		{
 
-			// 추가 필터: 너무 낮은 온도 제외 (예: 25도 미만)
-			if (obj_info[THERMAL_CAM][i].bbox_temp < 25)
-			{
-				continue;
-			}
 
-			temps[count] = (float)obj_info[THERMAL_CAM][i].bbox_temp;
-			temp_sum += temps[count];
-			count++;
-
-			// 디버그 로그
-			// glog_debug("Including cow %d with temp %.1f in average\n",
-			//           i, temps[count-1]);
-		}
-	}
-
-	if (count == 0)
-	{
-		glog_debug("No valid cows for temperature statistics\n");
-		return;
-	}
-
-	// 평균 계산
-	stats->avg_temp = temp_sum / count;
-	stats->total_cows = count;
-
-	// 표준편차 계산
-	float variance = 0;
-	for (int i = 0; i < count; i++)
-	{
-		float diff = temps[i] - stats->avg_temp;
-		variance += diff * diff;
-	}
-	stats->std_dev = sqrt(variance / count);
-
-	// 통계 로그
-	// glog_debug("Temperature Stats: count=%d, avg=%.1f, std=%.1f, range=[%.1f-%.1f]\n",
-	//            count, stats->avg_temp, stats->std_dev,
-	//            count > 0 ? temps[0] : 0,
-	//            count > 0 ? temps[count-1] : 0);
-}
-
-// 개별 소의 발열 여부 판단
-int is_cow_fever(int obj_id, HerdTempStats *herd_stats)
-{
-	if (obj_id < 0 || !herd_stats || herd_stats->total_cows < 2)
-		return 0;
-
-	float cow_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
-	float avg_temp = herd_stats->avg_temp;
-	float std_dev = herd_stats->std_dev;
-
-	// 방법 1: 평균보다 특정 값 이상 높은 경우
-	float temp_threshold = 5.0f; // 평균보다 5도 이상 높으면 발열
-	if (cow_temp > avg_temp + temp_threshold)
-	{
-		return 1;
-	}
-
-	// 방법 2: 표준편차 기반 (더 정확함)
-	// 평균 + (2 * 표준편차) 이상이면 발열 (상위 2.5%)
-	if (std_dev > 0 && cow_temp > avg_temp + (2.0f * std_dev))
-	{
-		return 1;
-	}
-
-	return 0;
-}
-
-int is_cow_in_top_percent(int obj_id, float percent)
-{
-	int cow_count = 0;
-	float my_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
-	int higher_count = 0;
-
-	// 나보다 온도가 높은 소 개수 세기
-	for (int i = 0; i < NUM_OBJS; i++)
-	{
-		if (obj_info[THERMAL_CAM][i].bbox_temp > 0)
-		{
-			cow_count++;
-			if (obj_info[THERMAL_CAM][i].bbox_temp > my_temp)
-			{
-				higher_count++;
-			}
-		}
-	}
-
-	if (cow_count == 0)
-		return 0;
-
-	// 상위 몇 %인지 계산
-	float percentile = (float)higher_count / cow_count * 100.0f;
-
-	// 상위 percent% 안에 들면 발열
-	return (percentile <= percent);
-}
-
-void process_fever_detection(int cam_idx)
-{
-	if (cam_idx != THERMAL_CAM || !g_setting.temp_apply)
-		return;
-
-	static HerdTempStats herd_stats = {0};
-
-	// 전체 소들의 온도 통계 계산
-	calculate_herd_temperature_stats(&herd_stats);
-
-	// 유효한 소가 너무 적으면 기본값 사용
-	if (herd_stats.total_cows < 2 || herd_stats.avg_temp < 25.0f)
-	{
-		glog_debug("Invalid stats: cows=%d, avg=%.1f. Using default threshold.\n",
-				   herd_stats.total_cows, herd_stats.avg_temp);
-
-		// 절대 온도 기준으로 판단
-		for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
-		{
-			if (obj_info[THERMAL_CAM][obj_id].bbox_temp <= 0)
-				continue;
-
-			// 38도 이상이면 발열로 판단
-			if (obj_info[THERMAL_CAM][obj_id].bbox_temp >= 38.0f)
-			{
-				obj_info[THERMAL_CAM][obj_id].temp_duration++;
-
-				if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time)
-				{
-					obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-					obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
-					obj_info[THERMAL_CAM][obj_id].notification_flag = 1;
-					glog_info("FEVER DETECTED (absolute): Cow %d, temp=%.1f\n",
-							  obj_id, (float)obj_info[THERMAL_CAM][obj_id].bbox_temp);
-				}
-			}
-			else
-			{
-				obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-			}
-		}
-		return;
-	}
-
-	// 정상적인 통계 기반 발열 감지
-	for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
-	{
-		if (obj_info[THERMAL_CAM][obj_id].bbox_temp <= g_setting.threshold_under_temp)
-		{
-			obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-			obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
-			continue;
-		}
-
-		float cow_temp = (float)obj_info[THERMAL_CAM][obj_id].bbox_temp;
-
-		// 평균이 정상 범위인 경우에만 상대 비교
-		int is_fever = 0;
-		if (herd_stats.avg_temp >= 30.0f && herd_stats.avg_temp <= 37.0f)
-		{
-			// 평균 + 임계값 방식
-			is_fever = (cow_temp > herd_stats.avg_temp + g_setting.temp_diff_threshold);
-		}
-		else
-		{
-			// 평균이 비정상이면 절대 온도 기준
-			is_fever = (cow_temp >= 38.0f);
-		}
-
-		if (is_fever)
-		{
-			obj_info[THERMAL_CAM][obj_id].temp_duration++;
-
-			// glog_debug("Cow %d fever check: temp=%.1f, avg=%.1f, duration=%d/%d\n",
-			//           obj_id, cow_temp, herd_stats.avg_temp,
-			//           obj_info[THERMAL_CAM][obj_id].temp_duration,
-			//           g_setting.over_temp_time);
-
-			if (obj_info[THERMAL_CAM][obj_id].temp_duration >= g_setting.over_temp_time)
-			{
-				obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-
-				if (obj_info[THERMAL_CAM][obj_id].temp_event_time_gap == 0)
-				{
-					obj_info[THERMAL_CAM][obj_id].class_id = CLASS_OVER_TEMP;
-					// obj_info[THERMAL_CAM][obj_id].notification_flag = 1;
-
-					// glog_info("FEVER DETECTED: Cow %d, temp=%.1f (avg=%.1f + %.1f)\n",
-					//          obj_id, cow_temp, herd_stats.avg_temp,
-					//          g_setting.temp_diff_threshold);
-				}
-			}
-		}
-		else
-		{
-			obj_info[THERMAL_CAM][obj_id].temp_duration = 0;
-			obj_info[THERMAL_CAM][obj_id].class_id = CLASS_NORMAL_COW;
-		}
-	}
-}
-
-void get_bbox_temp(GstBuffer *buf, int obj_id)
-{
-	if (obj_id < 0)
-		return;
-
-	int count = 0;
-	float temp_total = 0.0, temp_avg = 0.0;
-	int x_start = 0, y_start = 0, width = 0, height = 0;
-	float pixel_temp = 0;
-	unsigned char r = 0, g = 0, b = 0, a = 0;
-
-	if (obj_id < 0)
-	{
-		glog_error("[get_bbox_temp] Invalid obj_id: %d\n", obj_id);
-		return;
-	}
-
-	NvBufSurface *surface = NULL;
-	GstMapInfo map_info;
-
-	if (!gst_buffer_map(buf, &map_info, GST_MAP_READ))
-	{
-		glog_error("[get_bbox_temp] Failed to map buffer for obj_id: %d\n", obj_id);
-		// ❌ unmap 제거
-		return;
-	}
-
-	surface = (NvBufSurface *)map_info.data;
-	if (surface == NULL)
-	{
-		glog_error("[get_bbox_temp] Surface is NULL for obj_id: %d\n", obj_id);
-		gst_buffer_unmap(buf, &map_info);
-		return;
-	}
-
-	// glog_trace("[get_bbox_temp] Successfully mapped buffer for obj_id: %d\n", obj_id);
-
-	x_start = (obj_info[THERMAL_CAM][obj_id].x);
-	y_start = (obj_info[THERMAL_CAM][obj_id].y);
-	width = obj_info[THERMAL_CAM][obj_id].width;
-	height = obj_info[THERMAL_CAM][obj_id].height;
-
-	temp_total = 0.0;
-	count = 0;
-
-	// Process the motion vectors as needed
-	for (int x = x_start; x < (x_start + width); ++x)
-	{
-		if (x % XY_DIVISOR != 0)
-			continue;
-		for (int y = y_start; y < (y_start + height); ++y)
-		{
-			if (y % XY_DIVISOR != 0)
-				continue;
-			get_pixel_color(surface, 0, x, y, &r, &g, &b, &a);
-			pixel_temp = get_pixel_temp(r, g, b, a);
-			if (pixel_temp < g_setting.threshold_under_temp || pixel_temp > g_setting.threshold_upper_temp)
-				continue;
-			temp_total += pixel_temp;
-			count++;
-		}
-	}
-
-	if (count > 0)
-	{
-		temp_avg = temp_total / (float)count;
-		add_value_and_calculate_avg(&obj_info[THERMAL_CAM][obj_id], (int)temp_avg);
-	}
-
-	// ✅ 반드시 unmap 호출 (메모리 누수 방지)
-	gst_buffer_unmap(buf, &map_info);
-}
 
 #if 1
 // Function to update the display text for an object
@@ -1231,35 +333,11 @@ void update_display_text(NvDsObjectMeta *obj_meta, const char *text)
 }
 #endif
 
-void temp_display_text(NvDsObjectMeta *obj_meta)
-{
-	char display_text[100] = "", append_text[100] = "";
-	if (obj_meta->object_id < 0)
-		return;
-	if (obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp < (g_setting.threshold_under_temp + g_setting.temp_diff_threshold)) // LJH, 20250410
-		return;
-
-	strcpy(display_text, obj_meta->text_params.display_text);
-	sprintf(append_text, "[%d°C]", obj_info[THERMAL_CAM][obj_meta->object_id].bbox_temp + 4);
-	strcat(display_text, append_text);
-	remove_newlines(display_text);
-	if (obj_meta->text_params.display_text)
-	{
-		g_free(obj_meta->text_params.display_text);
-		obj_meta->text_params.display_text = g_strdup(display_text);
-	}
-}
 
 int objs_temp_avg = 0;
 int objs_temp_total = 0;
 int objs_count = 0;
 
-void init_temp_avg()
-{
-	objs_temp_avg = 0;
-	objs_count = 0;
-	objs_temp_total = 0;
-}
 
 #endif
 
@@ -1312,16 +390,6 @@ void remove_newline_text(NvDsObjectMeta *obj_meta)
 }
 
 #if TEMP_NOTI
-int is_temp_duration()
-{
-	for (int obj_id = 0; obj_id < NUM_OBJS; obj_id++)
-	{
-		if (obj_info[THERMAL_CAM][obj_id].class_id == CLASS_OVER_TEMP && obj_info[THERMAL_CAM][obj_id].temp_duration > 0)
-			return 1;
-	}
-
-	return 0;
-}
 
 #endif
 
@@ -1408,30 +476,6 @@ void set_color(NvDsObjectMeta *obj_meta, int color, int set_text_blank)
 	}
 }
 
-// 색상 설정도 단순화
-void set_temp_bbox_color(NvDsObjectMeta *obj_meta)
-{
-	int obj_id = obj_meta->object_id;
-	if (obj_id < 0)
-		return;
-
-	// 온도 기반 색상 설정
-	if (obj_info[THERMAL_CAM][obj_id].class_id == CLASS_OVER_TEMP)
-	{
-		// 발열: 빨간색
-		set_color(obj_meta, RED_COLOR, 0);
-	}
-	else if (obj_info[THERMAL_CAM][obj_id].temp_duration > 0)
-	{
-		// 발열 진행 중: 노란색
-		set_color(obj_meta, YELLO_COLOR, 0);
-	}
-	else
-	{
-		// 정상: 녹색
-		set_color(obj_meta, GREEN_COLOR, 0);
-	}
-}
 
 // nvds_process.c에 추가할 함수
 static void add_clock_overlay(NvDsFrameMeta *frame_meta, NvDsBatchMeta *batch_meta, int cam_idx)
@@ -2102,98 +1146,8 @@ static void on_event_save_complete(int camera_id, int event_id, const char *file
 	}
 }
 
-void setup_nv_analysis()
-{
-	glog_trace("g_config.device_cnt=%d\n", g_config.device_cnt);
 
-	g_cow_tracking_state.is_tracking = FALSE;
 
-	init_all_circular_buffers();
-	set_event_save_callback(on_event_save_complete, NULL);
-
-	// 각 카메라별로 동적 할당
-	g_cam_indices = g_malloc(sizeof(int) * g_config.device_cnt);
-
-	for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
-	{
-		GstPad *osd_sink_pad = NULL;
-		char element_name[32];
-		GstElement *nvosd = NULL;
-
-		sprintf(element_name, "nvosd_%d", cam_idx + 1);
-		glog_trace("element_name=%s\n", element_name);
-
-		nvosd = gst_bin_get_by_name(GST_BIN(g_pipeline), element_name);
-		if (nvosd == NULL)
-		{
-			glog_error("Fail get %s element\n", element_name);
-			continue;
-		}
-
-		osd_sink_pad = gst_element_get_static_pad(nvosd, "sink");
-		if (!osd_sink_pad)
-		{
-			g_print("Unable to get sink pad for %s\n", element_name);
-			gst_object_unref(nvosd);
-			continue;
-		}
-
-		// 각 카메라별로 고유한 인덱스 저장
-		g_cam_indices[cam_idx] = cam_idx;
-
-		g_print("osd_sink_pad_buffer_probe cam_idx=%d\n", cam_idx);
-		gst_pad_add_probe(osd_sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
-						  osd_sink_pad_buffer_probe, &g_cam_indices[cam_idx], NULL);
-
-		gchar *h264_element_name = g_strdup_printf("h264parse_%d", cam_idx + 1);
-		GstElement *h264parse = gst_bin_get_by_name(GST_BIN(g_pipeline), h264_element_name);
-
-		if (h264parse)
-		{
-			// src pad에 프로브 추가 (파싱된 H.264 스트림)
-			GstPad *srcpad = gst_element_get_static_pad(h264parse, "src");
-			gst_pad_add_probe(srcpad, GST_PAD_PROBE_TYPE_BUFFER,
-							  h264_buffer_probe, &g_cam_indices[cam_idx], NULL);
-			gst_object_unref(srcpad);
-			g_print("Added probe to camera %d h264parse element\n", cam_idx);
-		}
-		else
-		{
-			g_warning("Could not find h264parse_%d element\n", cam_idx);
-		}
-
-		g_free(h264_element_name);
-		gst_object_unref(h264parse);
-
-		gst_object_unref(osd_sink_pad);
-		gst_object_unref(nvosd);
-	}
-
-	pthread_create(&g_tid, NULL, event_sender_thread, NULL);
-}
-
-void endup_nv_analysis()
-{
-	if (g_tid)
-	{
-		g_event_class_id = EVENT_EXIT;
-
-		pthread_join(g_tid, NULL);
-	}
-
-	cleanup_all_circular_buffers();
-
-	if (g_cam_indices)
-	{
-		g_free(g_cam_indices);
-		g_cam_indices = NULL;
-	}
-}
-
-int is_event_recording()
-{
-	return g_event_recording;
-}
 
 gboolean track_cow_with_area_move(int x, int y, int width, int height)
 {
