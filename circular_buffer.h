@@ -13,7 +13,7 @@
 #define MAX_FRAMES (CIRCULAR_BUFFER_DURATION * BUFFER_FPS)
 #define MAX_FRAME_SIZE (1024 * 1024)  // 1MB per frame
 
-extern WebRTCConfig g_config;
+// Moved to globals.h
 
 typedef void (*EventSaveCallback)(int camera_id, int event_id, const char *filename, const char *http_path,
                                  gboolean success, double event_time, void *user_data);

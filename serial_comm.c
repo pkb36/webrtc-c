@@ -11,9 +11,9 @@
 #include "unified_log.h"
 #include <json-glib/json-glib.h>
 #include "device_setting.h"
+#include "globals.h"
 
-extern DeviceSetting g_setting;
-extern int g_move_speed;
+// Moved to globals.h
 
 enum DataBits
 {

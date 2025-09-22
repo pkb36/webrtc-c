@@ -6,6 +6,7 @@
 #include "unified_log.h"
 #include "serial_comm.h"
 #include "nvds_process.h"
+#include "globals.h"
 #include <sys/stat.h>     // stat 구조체와 함수용
 #include <unistd.h>       // access, fchmod, fchown, unlink용
 #include <errno.h>        // errno, strerror용

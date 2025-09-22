@@ -35,14 +35,14 @@
 #include "ptz_control.h"
 #include "unified_log.h"
 #include "command_handler.h"
+#include "globals.h"
 
 #include <unistd.h> // write, close 등을 위해 추가
 #include <errno.h>  // strerror를 위해 추가
 
 #define IP_MAX_LENGTH 15
 
-extern void set_tracker_analysis(gboolean OnOff);
-
+// Global variables - definitions (not extern declarations)
 pthread_mutex_t g_send_mutex;
 pthread_mutex_t g_process_msg_mutex;
 pthread_mutex_t g_send_info_mutex;
@@ -66,8 +66,7 @@ int g_source_cam_idx = RGB_CAM;
 #define SERVER_UDP_PORT 8000
 #define REST_SERVER_PATH "/home/nvidia/rest_server_bin"
 
-extern gboolean load_ranch_setting(const char *file_name, RanchSetting *setting);
-extern void get_ranch_setting_path(char *fname);
+// Moved to globals.h
 RanchSetting g_ranch_setting;
 
 #endif
@@ -88,13 +87,7 @@ void redirect_output();
 void send_pipe_data(const gchar *str);
 void goto_ptz_preset(int index, int use_auto);
 
-extern void *receive_data(void *arg);
-extern SOCKETINFO *init_socket_server(int port, void *(*func_ptr)(void *), void (*process_data)(char *ptr, int len, void *arg));
-extern void process_data(char *buffer, int len, void *arg);
-extern char *get_global_ip_with_timeout();
-extern void handle_custom_command(gJSONObj *jsonObj, send_message_func_t send_func);
-
-// Removed duplicate mutex declaration - already declared at line 48
+// Extern declarations moved to globals.h
 
 // Helper function for error cleanup
 static void cleanup_gerror(GError **error) {
@@ -438,12 +431,13 @@ int check_internet_connection()
 
 int get_udp_port(UDPClientProcess process, CameraDevice device, StreamChoice stream_choice, int stream_index)
 {
+	WebRTCConfig* config = get_config();
 	int udp_port = 0;
-	int max_sender_port = g_config.stream_base_port + (100 * stream_choice) + (g_config.device_cnt * g_config.max_stream_cnt) - 1;
-	int max_recorder_port = max_sender_port + 1 + g_config.device_cnt - 1;
+	int max_sender_port = config->stream_base_port + (100 * stream_choice) + (config->device_cnt * config->max_stream_cnt) - 1;
+	int max_recorder_port = max_sender_port + 1 + config->device_cnt - 1;
 
 	if (process == SENDER)
-		udp_port = g_config.stream_base_port + (100 * stream_choice) + (g_config.device_cnt * stream_index) + device;
+		udp_port = config->stream_base_port + (100 * stream_choice) + (config->device_cnt * stream_index) + device;
 	else if (process == RECORDER)
 		udp_port = (max_sender_port + 1) + device;
 	else if (process == EVENT_RECORDER)
@@ -552,14 +546,15 @@ static gboolean start_pipeline(void)
     gchar *pipeline_string;
 
     config = get_default_config();
-    config->rgb_flip_method = g_config.flip_method[RGB_CAM];
+    WebRTCConfig* webrtc_config = get_config();
+    config->rgb_flip_method = webrtc_config->flip_method[RGB_CAM];
 
-    config->bitrate_high_rgb = g_config.bitrate_high[RGB_CAM];
-    config->bitrate_low_rgb = g_config.bitrate_low[RGB_CAM];
-    config->bitrate_high_thermal = g_config.bitrate_high[THERMAL_CAM];
-    config->bitrate_low_thermal = g_config.bitrate_low[THERMAL_CAM];
-    config->model_config_rgb = g_config.model_config[RGB_CAM];
-    config->model_config_thermal = g_config.model_config[THERMAL_CAM];
+    config->bitrate_high_rgb = webrtc_config->bitrate_high[RGB_CAM];
+    config->bitrate_low_rgb = webrtc_config->bitrate_low[RGB_CAM];
+    config->bitrate_high_thermal = webrtc_config->bitrate_high[THERMAL_CAM];
+    config->bitrate_low_thermal = webrtc_config->bitrate_low[THERMAL_CAM];
+    config->model_config_rgb = webrtc_config->model_config[RGB_CAM];
+    config->model_config_thermal = webrtc_config->model_config[THERMAL_CAM];
 
     pipeline_string = build_complete_pipeline(config);
     g_print("Pipeline : %s\n", pipeline_string);
@@ -1504,8 +1499,9 @@ int main(int argc, char *argv[])
     atexit(on_handle_exit);
     signal(SIGABRT, handle_sigabrt);
 
-    login_request(&g_curlinfo);
-    glog_trace ("g_curlinfo.token:%s\n", g_curlinfo.token);
+    CurlIinfoType* curlinfo = get_curl_info();
+    login_request(curlinfo);
+    glog_trace ("g_curlinfo.token:%s\n", curlinfo->token);
 
     g_main_loop_run(loop);
 
@@ -1593,19 +1589,21 @@ gchar* build_udp_source(gint port, gint flip_method, gint width, gint height) {
     );
 }
 
-gchar* build_snapshot_branch(const gchar *tee_name, gint width, gint height, const gchar *location) {
-    return g_strdup_printf(
-        "%s. ! queue ! videoscale ! videorate ! "
-        "video/x-raw,width=%d,height=%d,framerate=1/2 ! "
-        "jpegenc ! multifilesink post-messages=true location=%s",
-        tee_name, width, height, location
-    );
-}
+gchar* build_snapshot_branch(const gchar *tee_name, gint width, gint height,
+                               const gchar *location) {
+      return g_strdup_printf(
+          "%s. ! queue max-size-buffers=1 ! videoscale ! videorate ! "
+          "video/x-raw,width=%d,height=%d,framerate=1/10 ! "  // 10초에 1번으로 줄임
+          "jpegenc quality=40 ! "  // 품질 40으로 파일 크기 감소
+          "multifilesink location=%s max-files=1 next-file=0",  // 단일 파일만, 덮어쓰기 모드
+          tee_name, width, height, location
+      );
+  }
 
 gchar* build_inference_branch(const gchar *tee_name, const gchar *mux_name, 
                              gint width, gint height, const gchar *config_file,
                              const gchar *nvinfer_name, const gchar *postproc_name,
-                             const gchar *osd_name) {
+                             const gchar *osd_name, const gchar *output_tee_name) {
     return g_strdup_printf(
         "%s. ! queue ! nvvideoconvert ! "
         "video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d ! %s.sink_0 "
@@ -1614,50 +1612,46 @@ gchar* build_inference_branch(const gchar *tee_name, const gchar *mux_name,
         "nvinfer config-file-path=%s name=%s ! "
         "nvof ! nvvideoconvert ! "
         "dspostproc name=%s ! "
-        "nvdsosd name=%s display-clock=0",
+        "nvdsosd name=%s display-clock=0 ! "
+        "tee name=%s",  // 추론 결과가 포함된 스트림을 tee로 분기
         tee_name, width, height, mux_name,
         mux_name, width, height,
         config_file, nvinfer_name,
-        postproc_name, osd_name
+        postproc_name, osd_name, output_tee_name
     );
 }
 
-gchar* build_encoder_branch(gint output_width, gint output_height, 
+gchar* build_encoder_branch(const gchar *input_tee_name, gint output_width, gint output_height, 
                            gint bitrate, const gchar *parse_name,
                            const gchar *tee_name) {
     return g_strdup_printf(
-        "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d ! "
+        "%s. ! queue ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d ! "
         "nvv4l2h264enc bitrate=4000000 peak-bitrate=8000000 control-rate=1 preset-level=FastPreset idrinterval=5 ! "
         "video/x-h264,stream-format=byte-stream ! "
         "h264parse config-interval=-1 name=%s ! "
         "video/x-h264,stream-format=byte-stream,alignment=au ! "
         "rtph264pay pt=96 config-interval=1 ! "
         "queue max-size-buffers=5 ! tee name=%s",
-        output_width, output_height, parse_name, tee_name
+        input_tee_name, output_width, output_height, parse_name, tee_name
     );
 }
 
 gchar* build_low_res_branch(const gchar *tee_name, gint framerate, 
                            gint width, gint height, gint bitrate,
                            const gchar *enc_tee_name) {
-    // return g_strdup_printf(
-    //     "%s. ! queue ! videorate ! video/x-raw,framerate=%d/1 ! "
-    //     "videoscale ! video/x-raw,width=%d,height=%d ! "
-    //     "nvvideoconvert ! "
-    //     "nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=%d ! "
-    //     "rtph264pay pt=96 config-interval=1 ! "
-    //     "queue ! tee name=%s",
-    //     tee_name, framerate, width, height, bitrate, enc_tee_name
-    // );
+    // 저해상도 브랜치: 낮은 프레임레이트, 작은 해상도, 낮은 비트레이트
     return g_strdup_printf(
-        "%s. ! queue ! nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12,width=%d,height=%d ! "
-        "nvv4l2h264enc bitrate=4000000 peak-bitrate=8000000 control-rate=1 preset-level=FastPreset ! "
+        "%s. ! queue ! "
+        "videorate ! video/x-raw,framerate=%d/1 ! "  // 프레임레이트 제한 (예: 5fps)
+        "videoscale ! video/x-raw,width=%d,height=%d ! "  // 해상도 조정
+        "nvvideoconvert ! video/x-raw(memory:NVMM),format=NV12 ! "
+        "nvv4l2h264enc bitrate=%d peak-bitrate=%d control-rate=1 preset-level=FastPreset idrinterval=5 ! "  // 낮은 비트레이트
         "video/x-h264,stream-format=byte-stream ! "
         "h264parse config-interval=-1 ! "
         "video/x-h264,stream-format=byte-stream,alignment=au ! "
         "rtph264pay pt=96 config-interval=1 ! "
         "queue max-size-buffers=5 ! tee name=%s",
-        tee_name, width, height, enc_tee_name
+        tee_name, framerate, width/2, height/2, bitrate, bitrate*2, enc_tee_name  // 해상도를 절반으로 줄임
     );
 }
 
@@ -1707,23 +1701,23 @@ gchar* build_complete_pipeline(PipelineConfig *config) {
     g_string_append_printf(pipeline, "%s ", temp);
     g_free(temp);
     
-    // RGB 추론
+    // RGB 추론 (추론 결과를 inference_tee0로 출력)
     temp = build_inference_branch("video_src_tee0", "mux",
                                  config->rgb_width, config->rgb_height,
                                  config->model_config_rgb,
-                                 "nvinfer_1", "dspostproc_1", "nvosd_1");
-    g_string_append_printf(pipeline, "%s ! ", temp);
+                                 "nvinfer_1", "dspostproc_1", "nvosd_1", "inference_tee0");
+    g_string_append_printf(pipeline, "%s ", temp);
     g_free(temp);
     
-    // RGB 고해상도 인코더
-    temp = build_encoder_branch(config->rgb_output_width, config->rgb_output_height,
+    // RGB 고해상도 인코더 (추론 결과가 포함된 inference_tee0에서 분기)
+    temp = build_encoder_branch("inference_tee0", config->rgb_output_width, config->rgb_output_height,
                                config->bitrate_high_rgb,
                                "h264parse_1", "video_enc_tee1_0");
     g_string_append_printf(pipeline, "%s ", temp);
     g_free(temp);
     
-    // RGB 저해상도 브랜치
-    temp = build_low_res_branch("video_src_tee0", config->low_framerate,
+    // RGB 저해상도 브랜치 (추론 결과가 포함된 inference_tee0에서 분기)
+    temp = build_low_res_branch("inference_tee0", config->low_framerate,
                                config->rgb_width, config->rgb_height,
                                config->bitrate_low_rgb, "video_enc_tee2_0");
     g_string_append_printf(pipeline, "%s ", temp);
@@ -1742,23 +1736,23 @@ gchar* build_complete_pipeline(PipelineConfig *config) {
     g_string_append_printf(pipeline, "%s ", temp);
     g_free(temp);
     
-    // Thermal 추론
+    // Thermal 추론 (추론 결과를 inference_tee1로 출력)
     temp = build_inference_branch("video_src_tee1", "thermal",
                                  config->thermal_width, config->thermal_height,
                                  config->model_config_thermal,
-                                 "nvinfer_2", "dspostproc_2", "nvosd_2");
-    g_string_append_printf(pipeline, "%s ! ", temp);
+                                 "nvinfer_2", "dspostproc_2", "nvosd_2", "inference_tee1");
+    g_string_append_printf(pipeline, "%s ", temp);
     g_free(temp);
     
-    // Thermal 고해상도 인코더 (실제로는 384x288)
-    temp = build_encoder_branch(config->thermal_output_width, config->thermal_output_height,
+    // Thermal 고해상도 인코더 (추론 결과가 포함된 inference_tee1에서 분기)
+    temp = build_encoder_branch("inference_tee1", config->thermal_output_width, config->thermal_output_height,
                                config->bitrate_high_thermal,
                                "h264parse_2", "video_enc_tee1_1");
     g_string_append_printf(pipeline, "%s ", temp);
     g_free(temp);
     
-    // Thermal 저해상도 브랜치
-    temp = build_low_res_branch("video_src_tee1", config->low_framerate,
+    // Thermal 저해상도 브랜치 (추론 결과가 포함된 inference_tee1에서 분기)
+    temp = build_low_res_branch("inference_tee1", config->low_framerate,
                                384, 288,
                                config->bitrate_low_thermal, "video_enc_tee2_1");
     g_string_append_printf(pipeline, "%s ", temp);

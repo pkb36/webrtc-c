@@ -42,10 +42,9 @@ extern void terminate_program();
 #if MINDULE_INCLUDE
 #define RANCH_SETTING_FILE "ranch_setting.json"
 extern RanchSetting g_ranch_setting;
-extern int g_frame_count[];
-
-void get_ranch_setting_path(char *fname);
 #endif
+
+extern int g_frame_count[];
 
 static pthread_t g_heartbit_tid = 0;
 static int g_heartbit_timeout = 5000;

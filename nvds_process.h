@@ -165,35 +165,8 @@ typedef struct {
     guint timer_id;  // 타이머 ID 저장
 } CowTrackingState;
 
-extern CowTrackingState g_cow_tracking_state;
-
-extern int g_event_class_id;
-extern CurlIinfoType g_curlinfo;
-extern GstElement *g_pipeline;
-extern WebRTCConfig g_config;
-extern DeviceSetting g_setting;
-extern int g_source_cam_idx;
-extern int g_move_speed;
-extern int g_preset_index;
-extern ObjState object_state;
-extern int g_top, g_left, g_width, g_height;
-extern int g_move_to_center_running;
-extern Timer timers[];
-extern gboolean move_and_stop_ptz(int direction, int ptz_speed, int ptz_delay);
-extern int g_frame_count[];
-extern enum AppState g_app_state;
-
-extern void add_value_and_calculate_avg(ObjMonitor* obj, int new_value);
-extern double calculate_sqrt(double width, double height);
-extern int check_process(int port);
-extern gboolean move_and_stop_ptz(int direction, int ptz_speed, int ptz_delay);
-extern void wait_ptz_stop();
-extern gboolean is_ptz_motion_stopped();
-extern void init_objects(PersonObj object[]);
-extern void set_person_obj_state(PersonObj object[], NvDsObjectMeta *obj_meta);
-extern ObjState track_object(ObjState object_state, PersonObj object[]);
-extern void remove_newlines(char *str);
-extern void init_obj_info();
+// All extern declarations moved to globals.h
+// Include globals.h in your .c files instead
 
 void set_process_analysis(gboolean OnOff);
 void setup_nv_analysis();

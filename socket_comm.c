@@ -10,12 +10,20 @@
 #include <signal.h>
 #include "socket_comm.h"
 #include "unified_log.h"
+#include "globals.h"
 #include "device_setting.h"
 #include "curllib.h"
 #include "config.h"
 #include "nvds_process.h"
+#include <errno.h>
+#include <pthread.h>
+#include <stdlib.h>
 
 #define MAX_BUF_SIZE 4096
+
+#ifndef MIN
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+#endif
 
 #ifdef PTZ_SUPPORT
 #include "ptz_control.h"
@@ -42,16 +50,33 @@ void *process_socket_comm_input(void *arg)
     int n;
     socklen_t len;
 
+    if (!pInfo) {
+        glog_error("Invalid SOCKETINFO pointer\n");
+        return NULL;
+    }
+
     memset(&readaddr, 0, sizeof(readaddr));
+    memset(buffer, 0, sizeof(buffer));
     // glog_trace("thread start %d , %d\n", pInfo->socketfd, pInfo->port);
 
     while (1)
     {
         len = sizeof(readaddr);
-        n = recvfrom(pInfo->socketfd, (char *)buffer, MAX_BUF_SIZE,
+        n = recvfrom(pInfo->socketfd, (char *)buffer, MAX_BUF_SIZE - 1,
                      MSG_WAITALL, (struct sockaddr *)&readaddr, &len);
 
-        buffer[n] = 0;
+        // Check for receive errors
+        if (n < 0) {
+            glog_error("recvfrom error: %s\n", strerror(errno));
+            continue;
+        }
+        
+        // Ensure null termination
+        if (n >= 0 && n < MAX_BUF_SIZE) {
+            buffer[n] = '\0';
+        } else {
+            buffer[MAX_BUF_SIZE - 1] = '\0';
+        }
         // 최적화: 데이터 수신 로그 제거 (성능상 불필요)
         if (strcmp(buffer, "EXIT") == 0)
         {
@@ -186,11 +211,12 @@ void write_position(char side, int index, char *id_str)
     {
         strcpy(side_str, "우");
     }
-    memset(g_curlinfo.position, 0, sizeof(g_curlinfo.position));
+    CurlIinfoType* curlinfo = get_curl_info();
+    memset(curlinfo->position, 0, sizeof(curlinfo->position));
 #ifdef KOREAN
-    snprintf(g_curlinfo.position, sizeof(g_curlinfo.position), "위치: %s-%d, 소ID: %s", side_str, index + 1, id_str);
+    snprintf(curlinfo->position, sizeof(curlinfo->position), "위치: %s-%d, 소ID: %s", side_str, index + 1, id_str);
 #else
-    snprintf(g_curlinfo.position, sizeof(g_curlinfo.position), "Position: %s-%d, Cattle ID: %s", side_str, index, id_str);
+    snprintf(curlinfo->position, sizeof(curlinfo->position), "Position: %s-%d, Cattle ID: %s", side_str, index, id_str);
 #endif
     glog_trace("side=%c, index=%d, id_str=%s\n", side, index, id_str);
 }
@@ -211,69 +237,101 @@ struct Queue
     int rear;
 };
 
+// Thread-safe queue with mutex protection
 static struct Queue queue;
+static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Function to initialize the queue
+// Function to initialize the queue (thread-safe)
 void initialize_queue(struct Queue *q)
 {
+    pthread_mutex_lock(&queue_mutex);
     q->front = -1;
     q->rear = -1;
+    pthread_mutex_unlock(&queue_mutex);
 }
 
-// Function to check if the queue is full
+// Function to check if the queue is full (thread-safe)
 int is_queue_full(struct Queue *q)
 {
-    return (q->rear == MAX_ITEM_NUM - 1);
+    pthread_mutex_lock(&queue_mutex);
+    int result = (q->rear == MAX_ITEM_NUM - 1);
+    pthread_mutex_unlock(&queue_mutex);
+    return result;
 }
 
-// Function to check if the queue is empty
+// Function to check if the queue is empty (thread-safe)
 int is_queue_empty(struct Queue *q)
 {
-    return (q->front == -1 || q->front > q->rear);
+    pthread_mutex_lock(&queue_mutex);
+    int result = (q->front == -1 || q->front > q->rear);
+    pthread_mutex_unlock(&queue_mutex);
+    return result;
 }
 
-// Function to add a item to the queue (enqueue)
+// Function to add a item to the queue (thread-safe enqueue)
 void enqueue(struct Queue *q, int index, const char *pos_str, const char *id_str)
 {
-    if (is_queue_full(q))
+    if (!q || !pos_str || !id_str) {
+        glog_error("Invalid parameters to enqueue\n");
+        return;
+    }
+    
+    pthread_mutex_lock(&queue_mutex);
+    
+    if (q->rear == MAX_ITEM_NUM - 1)
     {
+        pthread_mutex_unlock(&queue_mutex);
         glog_trace("Queue is full! Cannot enqueue index=%d,pos_str=%s,id_str=%s\n", index, pos_str, id_str);
+        return;
     }
-    else
+    
+    if (q->front == -1)
     {
-        if (q->front == -1)
-        {
-            q->front = 0; // First item in the queue
-        }
-        q->rear++;
-        q->items[q->rear].index = index;
-        strcpy(q->items[q->rear].pos_str, pos_str);
-        strcpy(q->items[q->rear].id_str, id_str);
-        glog_trace("Enqueued item: index=%d,pos=%s,ID=%s\n", index, pos_str, id_str);
+        q->front = 0; // First item in the queue
     }
+    q->rear++;
+    q->items[q->rear].index = index;
+    
+    // Safe string copy with bounds checking
+    strncpy(q->items[q->rear].pos_str, pos_str, sizeof(q->items[q->rear].pos_str) - 1);
+    q->items[q->rear].pos_str[sizeof(q->items[q->rear].pos_str) - 1] = '\0';
+    
+    strncpy(q->items[q->rear].id_str, id_str, sizeof(q->items[q->rear].id_str) - 1);
+    q->items[q->rear].id_str[sizeof(q->items[q->rear].id_str) - 1] = '\0';
+    
+    pthread_mutex_unlock(&queue_mutex);
+    glog_trace("Enqueued item: index=%d,pos=%s,ID=%s\n", index, pos_str, id_str);
 }
 
-// Function to remove a item from the queue (dequeue)
+// Function to remove a item from the queue (thread-safe dequeue)
 struct Item dequeue(struct Queue *q)
 {
     struct Item emptyItem = {-1, "", ""}; // Return an empty item if queue is empty
+    
+    if (!q) {
+        glog_error("Invalid queue pointer in dequeue\n");
+        return emptyItem;
+    }
 
-    if (is_queue_empty(q))
+    pthread_mutex_lock(&queue_mutex);
+    
+    if (q->front == -1 || q->front > q->rear)
     {
+        pthread_mutex_unlock(&queue_mutex);
         // 최적화: 정상 작동에서는 로그 최소화
         return emptyItem; // Return an empty item
     }
-    else
+    
+    struct Item dequeuedItem = q->items[q->front];
+    q->front++;
+    if (q->front > q->rear)
     {
-        struct Item dequeuedItem = q->items[q->front];
-        q->front++;
-        if (q->front > q->rear)
-        {
-            q->front = q->rear = -1; // Reset the queue when it's empty
-        }
-        // 최적화: 대기열 아이템 로그 제거
-        return dequeuedItem;
+        q->front = q->rear = -1; // Reset the queue when it's empty
     }
+    
+    pthread_mutex_unlock(&queue_mutex);
+    // 최적화: 대기열 아이템 로그 제거
+    return dequeuedItem;
 }
 
 // Function to display the students in the queue
@@ -397,48 +455,84 @@ void get_substrings(char *str, char *substr1, char *substr2, char *seperator)
 
 void process_data(char *buf, int len, void *arg) // send message to webrtc
 {
+    if (!buf || len <= 0 || len > MAX_BUF_SIZE) {
+        glog_error("Invalid parameters in process_data: buf=%p, len=%d\n", buf, len);
+        return;
+    }
+    
     int index = 0;
-    char pos_str[20], id_str[20];
+    char pos_str[20] = {0};
+    char id_str[20] = {0};
+    
+    // Ensure null termination
+    char safe_buf[MAX_BUF_SIZE];
+    strncpy(safe_buf, buf, MIN(len, MAX_BUF_SIZE - 1));
+    safe_buf[MIN(len, MAX_BUF_SIZE - 1)] = '\0';
 
-    get_substrings(buf, pos_str, id_str, ";");
-    glog_trace("buf=%s, pos_str=%s, id_str=%s\n", buf, pos_str, id_str);
+    get_substrings(safe_buf, pos_str, id_str, ";");
+    glog_trace("buf=%s, pos_str=%s, id_str=%s\n", safe_buf, pos_str, id_str);
+    
     if (pos_str[0] == 'L' || pos_str[0] == 'R')
     {
-        index = atoi(&pos_str[1]) - 1;
+        // Safe string to integer conversion
+        char *endptr;
+        long temp_index = strtol(&pos_str[1], &endptr, 10);
+        
+        if (endptr == &pos_str[1] || *endptr != '\0') {
+            glog_error("Invalid index format in pos_str: %s\n", pos_str);
+            return;
+        }
+        
+        index = (int)temp_index - 1;
         if (index < 0 || index >= ONE_SIDE_SECTOR_MAX_NUM)
         {
-            printf("index[%d] was wrong\n", index);
+            glog_error("Index [%d] out of range (0-%d)\n", index, ONE_SIDE_SECTOR_MAX_NUM-1);
             return;
         }
         preprocess_event(index, pos_str, id_str); // LJH, 241210
     }
     else
     {
-        printf("Not received left or right side info\n");
+        glog_warning("Not received left or right side info: pos_str=%s\n", pos_str);
     }
 }
 
 void *receive_data(void *arg)
 {
     SOCKETINFO *pInfo = (SOCKETINFO *)arg;
+    
+    if (!pInfo) {
+        glog_error("Invalid SOCKETINFO pointer in receive_data\n");
+        return NULL;
+    }
+    
     char buffer[MAX_BUF_SIZE];
     struct sockaddr_in readaddr;
     int n;
     socklen_t len;
 
     memset(&readaddr, 0, sizeof(readaddr));
+    memset(buffer, 0, sizeof(buffer));
     log_info("Socket thread started: port %d", pInfo->port);
 
     while (1)
     {
         len = sizeof(readaddr);
-        n = recvfrom(pInfo->socketfd, (char *)buffer, MAX_BUF_SIZE, MSG_WAITALL, (struct sockaddr *)&readaddr, &len);
-        buffer[n] = 0;
-        // 최적화: 수신 데이터 로그 제거 (성능상 불필요)
+        n = recvfrom(pInfo->socketfd, (char *)buffer, MAX_BUF_SIZE - 1, MSG_WAITALL, (struct sockaddr *)&readaddr, &len);
+        
         if (n < 0) {
             log_error("Socket receive error on port %d: %s", pInfo->port, strerror(errno));
             break;
         }
+        
+        // Ensure null termination
+        if (n >= 0 && n < MAX_BUF_SIZE) {
+            buffer[n] = '\0';
+        } else {
+            buffer[MAX_BUF_SIZE - 1] = '\0';
+        }
+        
+        // 최적화: 수신 데이터 로그 제거 (성능상 불필요)
         if (strcmp(buffer, "EXIT") == 0)
         {
             break;

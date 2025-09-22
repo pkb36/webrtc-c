@@ -14,6 +14,7 @@
 #include "device_setting.h"
 #include "serial_comm.h"
 #include "nvds_process.h"
+#include "globals.h"
 
 static AutoPTZState g_auto_ptz_state = {0};
 static guint ptz_watchdog_timer = 0;
@@ -34,9 +35,7 @@ static unsigned char RANCH_POS_LIST[MAX_RANCH_POS][PTZ_POS_SIZE]; // LJH, actual
 static unsigned char auto_ptz_move_speed = 0x08;
 static unsigned char ptz_move_speed = 0x10;
 
-extern DeviceSetting g_setting;
-extern int stop_retry_count;
-extern int g_event_recording;
+// Moved to globals.h
 
 int g_no_zoom = 0;
 int ptz_err_code = PTZ_NORMAL;

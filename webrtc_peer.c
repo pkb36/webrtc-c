@@ -7,8 +7,9 @@
 #include "webrtc_peer.h"
 #include "config.h"
 #include "process_cmd.h"
+#include "globals.h"
 
-extern WebRTCConfig g_config;
+// Moved to globals.h
 
 typedef struct 
 {

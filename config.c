@@ -421,6 +421,13 @@ char* get_global_ip_robust() {
     char *ip = (char *)malloc(100);
     if (!ip) return NULL;
 
+    // curl 전역 초기화 (한 번만 수행)
+    static int curl_initialized = 0;
+    if (!curl_initialized) {
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+        curl_initialized = 1;
+    }
+
     for (int i = 0; ip_services[i] != NULL; i++) {
         for (int retry = 0; retry < 3; retry++) { // 각 서비스마다 3번 재시도
             ip[0] = '\0';
@@ -431,23 +438,46 @@ char* get_global_ip_robust() {
                 curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
                 curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
                 curl_easy_setopt(curl, CURLOPT_WRITEDATA, ip);
+                // DNS 캐시 타임아웃 설정
+                curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 60L);
+                // Follow redirects
+                curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+                curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
                 
-                glog_trace("Attempting to get external IP from %s (attempt %d)...", ip_services[i], retry + 1);
+                glog_trace("Attempting to get external IP from %s (attempt %d)...\n", ip_services[i], retry + 1);
                 CURLcode res = curl_easy_perform(curl);
                 curl_easy_cleanup(curl);
                 
                 if (res == CURLE_OK && strlen(ip) > 0) {
-                    glog_trace("Successfully got external IP: %s", ip);
-                    return ip; // 성공 시 즉시 반환
+                    // Remove any trailing whitespace/newline from IP
+                    char *newline = strchr(ip, '\n');
+                    if (newline) *newline = '\0';
+                    newline = strchr(ip, '\r');
+                    if (newline) *newline = '\0';
+                    
+                    // Validate IP format (basic check)
+                    if (strlen(ip) >= 7 && strlen(ip) <= 15) {
+                        glog_trace("Successfully got external IP: %s\n", ip);
+                        return ip; // 성공 시 즉시 반환
+                    } else {
+                        glog_trace("Invalid IP format received: %s\n", ip);
+                    }
+                } else {
+                    glog_trace("Failed attempt %d from %s (error: %s)\n", 
+                              retry + 1, ip_services[i], 
+                              res != CURLE_OK ? curl_easy_strerror(res) : "empty response");
                 }
-                g_usleep(500000); // 0.5초 대기 후 재시도
+                
+                if (retry < 2) { // 마지막 시도가 아니면 대기
+                    g_usleep(500000); // 0.5초 대기 후 재시도
+                }
             }
         }
     }
     
     // 모든 시도가 실패한 경우
     free(ip);
-    glog_error("Failed to get external IP from all services.");
+    glog_error("Failed to get external IP from all services.\n");
     return NULL;
 }
 
@@ -549,13 +579,15 @@ static gpointer update_external_ip_thread(gpointer data)
         g_atomic_pointer_set(&config->http_service_ip, new_ip);
         g_free(old_ip);
         
-        glog_trace("Updated http_service_ip to external (async): %s", new_ip);
+        glog_trace("Updated http_service_ip to external (async): %s\n", new_ip);
         
         char local_ip[100];
         get_local_ip(local_ip);
         write_lines_to_file("local_ip.log", local_ip, new_ip);
         
         free(global_ip);
+    } else {
+        glog_info("Failed to get external IP in background thread. Keeping local IP.\n");
     }
     
     return NULL;

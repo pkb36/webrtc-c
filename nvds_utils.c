@@ -1,4 +1,5 @@
 #include "nvds_utils.h"
+#include "globals.h"
 
 noti_queue notification_queue;
 

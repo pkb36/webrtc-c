@@ -59,6 +59,23 @@ class CameraRecorder:
 
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
+            # nvidia 사용자 권한으로 설정 (UID/GID 1000)
+            import pwd, grp
+            try:
+                nvidia_uid = pwd.getpwnam('nvidia').pw_uid
+                nvidia_gid = grp.getgrnam('nvidia').gr_gid
+                os.chown(str(self.output_dir), nvidia_uid, nvidia_gid)
+                # 상위 디렉토리들도 권한 설정
+                for parent in self.output_dir.parents:
+                    if parent == Path('/'):
+                        break
+                    if parent.exists():
+                        try:
+                            os.chown(str(parent), nvidia_uid, nvidia_gid)
+                        except:
+                            pass  # 권한이 없으면 무시
+            except:
+                logger.warning(f"디렉토리 소유자 변경 실패: {self.output_dir}")
         except OSError as e:
             logger.error(f"디렉토리 생성 실패 ({e.errno}): {self.output_dir} - {e}")
             self.recording_enabled = False  # 녹화 비활성화
@@ -91,6 +108,30 @@ class CameraRecorder:
         self.fragment_count = 0
         self.use_fallback = False  # fallback 모드 여부
         self.test_pattern = False  # 테스트 패턴 사용 여부
+        
+        # Fallback 재시도 제한 (무한 재귀 방지)
+        self.fallback_retry_count = 0
+        self.max_fallback_retries = 3
+        self.fatal_error = False  # 복구 불가능한 상태
+        self.restart_in_progress = False  # 재시작 진행 중 플래그
+
+    def check_disk_space(self, path):
+        """디스크 공간 체크"""
+        try:
+            import shutil
+            stat = shutil.disk_usage(str(path))
+            available_mb = stat.free / (1024 * 1024)
+            
+            if available_mb < 100:  # 100MB 미만
+                logger.error(f"{self.config['name']}: 디스크 공간 부족: {available_mb:.1f}MB ({path})")
+                return False
+            elif available_mb < 500:  # 500MB 미만 경고
+                logger.warning(f"{self.config['name']}: 디스크 공간 부족 경고: {available_mb:.1f}MB ({path})")
+                
+            return True
+        except Exception as e:
+            logger.error(f"{self.config['name']}: 디스크 공간 체크 실패: {e}")
+            return False
 
     def is_writable(self, path=None):
         """실시간 쓰기 가능 여부 체크"""
@@ -140,6 +181,8 @@ class CameraRecorder:
         
         if self.test_file:
             camera_source = self._get_file_source()
+        elif self.test_pattern:
+            camera_source = self._get_test_pattern_source()
         elif self.use_fallback:
             camera_source = self._get_fallback_source()
         else:
@@ -213,7 +256,7 @@ class CameraRecorder:
         bus.connect('message', self.on_bus_message)
 
     def on_format_location(self, splitmux, fragment_id):
-        """splitmuxsink가 새 파일을 생성할 때 호출되는 콜백"""
+        """splitmuxsink가 새 파일을 생성할 때 호출되는 콜백 (디스크 공간 체크 포함)"""
         if not self.recording_enabled:
             return "dummy.mp4"  # 녹화 비활성화 시 더미 값
             
@@ -221,9 +264,22 @@ class CameraRecorder:
         current_date = current_time.strftime("RECORD_%Y%m%d")
         output_dir = self.base_output_dir / current_date
         
+        # 디스크 공간 체크 추가
+        if not self.check_disk_space(self.base_output_dir):
+            # 임시 디렉토리도 체크
+            if not self.check_disk_space("/tmp"):
+                logger.critical(f"{self.config['name']}: 모든 저장 공간 부족 - 녹화 중단")
+                self.recording_enabled = False
+                return "dummy.mp4"
+            logger.warning(f"{self.config['name']}: 메인 저장소 공간 부족 - /tmp 사용")
+            return f"/tmp/cam_{self.config['device_id']}_{fragment_id}.mp4"
+        
         if not self.is_writable(self.base_output_dir):
-            logger.warning(f"파일시스템 RO 상태 - /tmp 사용")
-            # /tmp는 보통 tmpfs로 메모리에 있어 항상 쓰기 가능
+            logger.warning(f"{self.config['name']}: 파일시스템 RO 상태 - /tmp 사용")
+            if not self.check_disk_space("/tmp"):
+                logger.critical(f"{self.config['name']}: /tmp 공간도 부족 - 녹화 중단")
+                self.recording_enabled = False
+                return "dummy.mp4"
             return f"/tmp/cam_{self.config['device_id']}_{fragment_id}.mp4"
         
         try:
@@ -333,6 +389,22 @@ class CameraRecorder:
             f"video/x-raw, framerate=10/1"        
             )
 
+    def _get_test_pattern_source(self):
+        """테스트 패턴 소스 (최후의 수단 - 항상 동작 보장)"""
+        cam_name = self.config.get('name', 'CAM')
+        width = self.config.get('width', 1920)
+        height = self.config.get('height', 1080)
+        fps = self.config.get('fps', 30)
+        
+        # videotestsrc는 항상 동작하는 안전한 소스
+        return f"""videotestsrc pattern=smpte is-live=true ! 
+                   video/x-raw, width={width}, height={height}, framerate={fps}/1 ! 
+                   textoverlay text="{cam_name} - EMERGENCY PATTERN" 
+                       valignment=top halignment=left font-desc="Sans Bold 24" !
+                   textoverlay text="$(date +%Y-%m-%d\\ %H:%M:%S)" 
+                       valignment=bottom halignment=right font-desc="Sans Bold 16" 
+                       shaded-background=true"""
+
     def _get_file_source(self):
         """MP4 파일 소스 GStreamer 엘리먼트"""
         rtsp_url = "rtsp://121.67.120.195:8554/stream"
@@ -411,26 +483,110 @@ class CameraRecorder:
             warn, debug = message.parse_warning()
             logger.warning(f"{self.config['name']}: 경고 - {warn}, {debug}")
 
-    def switch_to_fallback(self):
-        """실행 중 fallback 소스로 전환"""
-        logger.info(f"{self.config['name']}: Fallback 소스로 전환 시도")
-        
-        # 기존 파이프라인 정지
-        if self.pipeline:
-            self.pipeline.set_state(Gst.State.NULL)
+    def switch_to_fallback(self, retry_count=0):
+        """실행 중 fallback 소스로 전환 (무한 재귀 방지, 최종 테스트 패턴 보장)"""
+        # 치명적 에러 상태면 테스트 패턴으로 전환
+        if self.fatal_error:
+            logger.critical(f"{self.config['name']}: 치명적 에러 상태 - 테스트 패턴으로 전환")
+            return self.switch_to_test_pattern()
             
+        # 최대 재시도 횟수 초과 시 테스트 패턴으로 전환
+        if retry_count >= self.max_fallback_retries:
+            logger.critical(f"{self.config['name']}: Fallback 전환 {self.max_fallback_retries}회 실패 - 테스트 패턴으로 전환")
+            self.fatal_error = True
+            return self.switch_to_test_pattern()
+            
+        logger.info(f"{self.config['name']}: Fallback 소스로 전환 시도 (시도 {retry_count + 1}/{self.max_fallback_retries})")
+        
+        # 기존 파이프라인 안전하게 정리
+        self.cleanup_pipeline()
+        
         # fallback 플래그 설정
         self.use_fallback = True
+        self.fallback_retry_count = retry_count
         
-        # 새 파이프라인 생성 (fallback 소스 사용)
-        self.create_pipeline()
+        try:
+            # 새 파이프라인 생성 (fallback 소스 사용)
+            self.create_pipeline()
+            
+            # 파이프라인 재시작
+            ret = self.pipeline.set_state(Gst.State.PLAYING)
+            
+            if ret == Gst.StateChangeReturn.FAILURE:
+                logger.error(f"{self.config['name']}: Fallback 파이프라인 시작 실패 (시도 {retry_count + 1})")
+                # 재귀적으로 다시 시도 (retry_count 증가)
+                return self.switch_to_fallback(retry_count + 1)
+            else:
+                logger.info(f"{self.config['name']}: Fallback 모드로 전환 완료")
+                # 성공 시 카운터 리셋
+                self.restart_count = 0
+                self.fallback_retry_count = 0
+                return True
+                
+        except Exception as e:
+            logger.error(f"{self.config['name']}: Fallback 전환 예외 발생: {e}")
+            return self.switch_to_fallback(retry_count + 1)
+
+    def switch_to_test_pattern(self):
+        """최후의 수단: 테스트 패턴으로 전환 (어떤 경우라도 영상 송출 보장)"""
+        logger.warning(f"{self.config['name']}: 테스트 패턴으로 전환 - 계속 영상 송출")
         
-        # 파이프라인 재시작
-        ret = self.pipeline.set_state(Gst.State.PLAYING)
-        if ret == Gst.StateChangeReturn.FAILURE:
-            logger.error(f"{self.config['name']}: Fallback 파이프라인 시작 실패")
+        # 기존 파이프라인 정리
+        self.cleanup_pipeline()
+        
+        # 테스트 패턴 플래그 설정
+        self.test_pattern = True
+        self.use_fallback = False  # fallback도 포기
+        
+        try:
+            # 테스트 패턴 파이프라인 생성
+            self.create_pipeline()
+            
+            # 파이프라인 시작
+            ret = self.pipeline.set_state(Gst.State.PLAYING)
+            
+            if ret == Gst.StateChangeReturn.FAILURE:
+                logger.error(f"{self.config['name']}: 테스트 패턴도 실패 - 5초 후 재시도")
+                # 테스트 패턴도 실패하면 5초 후 재시도
+                threading.Timer(5.0, self.switch_to_test_pattern).start()
+                return False
+            else:
+                logger.info(f"{self.config['name']}: 테스트 패턴 송출 시작 ✅")
+                # 프레임 수신 시간 업데이트
+                self.last_frame_time = datetime.now()
+                
+                # 10분 후 복구 시도 (테스트 패턴에서도 주기적으로 복구 시도)
+                threading.Timer(600.0, self.attempt_recovery_from_test_pattern).start()
+                return True
+                
+        except Exception as e:
+            logger.error(f"{self.config['name']}: 테스트 패턴 전환 예외: {e}")
+            # 예외 발생 시에도 5초 후 재시도
+            threading.Timer(5.0, self.switch_to_test_pattern).start()
+            return False
+
+    def attempt_recovery_from_test_pattern(self):
+        """테스트 패턴에서 정상 카메라로 복구 시도"""
+        if not self.test_pattern:
+            return  # 이미 복구됨
+            
+        logger.info(f"{self.config['name']}: 테스트 패턴에서 복구 시도")
+        
+        # 복구 시도
+        self.fatal_error = False  # 에러 상태 리셋
+        self.test_pattern = False
+        self.fallback_retry_count = 0
+        self.restart_count = 0
+        
+        # 원래 카메라로 복구 시도
+        success = self.restart_pipeline()
+        
+        if not success:
+            logger.warning(f"{self.config['name']}: 복구 실패 - 다시 테스트 패턴으로")
+            # 복구 실패 시 다시 테스트 패턴으로
+            self.switch_to_test_pattern()
         else:
-            logger.info(f"{self.config['name']}: Fallback 모드로 전환 완료")
+            logger.info(f"{self.config['name']}: 정상 카메라로 복구 성공! 🎉")
 
     def check_camera_recovery(self):
         """Fallback 모드에서 카메라 복구 가능 여부 확인"""
@@ -531,7 +687,7 @@ class CameraRecorder:
             return False
             
     def watchdog_thread_func(self):
-        """프레임 수신 모니터링 스레드"""
+        """개선된 프레임 수신 모니터링 스레드 (deadlock 방지)"""
         logger.info(f"{self.config['name']}: 워치독 스레드 시작")
 
         recovery_check_interval = 30
@@ -539,12 +695,20 @@ class CameraRecorder:
         
         while self.watchdog_running:
             try:
+                # Non-blocking 체크 - 재시작이 진행 중이면 대기
+                if self.restart_in_progress:
+                    time.sleep(1)
+                    continue
+                    
+                # Fallback 모드에서 주기적 복구 체크
                 if self.use_fallback:
-                    if (datetime.now() - last_recovery_check).total_seconds() > recovery_check_interval:
+                    current_time = datetime.now()
+                    if (current_time - last_recovery_check).total_seconds() > recovery_check_interval:
                         if self.check_camera_recovery():
                             logger.info(f"{self.config['name']}: 카메라 복구 감지 - 전환 시도")
-                            self.switch_from_fallback_to_camera()
-                        last_recovery_check = datetime.now()
+                            # Non-blocking 방식으로 전환 시도
+                            threading.Thread(target=self.switch_from_fallback_to_camera, daemon=True).start()
+                        last_recovery_check = current_time
 
                 # 마지막 프레임 시간 확인
                 if self.last_frame_time:
@@ -552,25 +716,59 @@ class CameraRecorder:
                     
                     if time_since_last_frame > self.frame_timeout:
                         logger.warning(f"{self.config['name']}: {time_since_last_frame:.1f}초 동안 프레임 수신 없음")
-                        self.request_restart("프레임 타임아웃")
                         
-                        # 재시작 후 대기
-                        time.sleep(self.frame_timeout)
-
-                if self.use_fallback:
-                    self.check_camera_recovery()
+                        # 재시작 진행 중이 아닐 때만 요청
+                        if not self.restart_in_progress:
+                            # Non-blocking 재시작 요청
+                            threading.Thread(target=self.request_restart, args=("프레임 타임아웃",), daemon=True).start()
+                            
+                            # 재시작 후 대기 (watchdog가 블록되지 않도록 짧게)
+                            time.sleep(5)
 
                 # 1초마다 체크
                 time.sleep(1.0)
                 
             except Exception as e:
                 logger.error(f"{self.config['name']}: 워치독 에러 - {e}")
+                self.restart_in_progress = False  # 에러 시 플래그 해제
+                time.sleep(1)
                 
         logger.info(f"{self.config['name']}: 워치독 스레드 종료")
         
+    def cleanup_pipeline(self):
+        """파이프라인 안전하게 정리"""
+        if self.pipeline:
+            try:
+                # EOS 전송 (타임아웃 포함)
+                self.pipeline.send_event(Gst.Event.new_eos())
+                self.pipeline.get_state(1 * Gst.SECOND)
+            except Exception as e:
+                logger.warning(f"{self.config['name']}: EOS 전송 중 예외: {e}")
+                
+            try:
+                self.pipeline.set_state(Gst.State.NULL)
+            except Exception as e:
+                logger.warning(f"{self.config['name']}: 파이프라인 NULL 설정 중 예외: {e}")
+                
+            # 명시적으로 None 설정 (가비지 컬렉션)
+            self.pipeline = None
+            time.sleep(0.5)
+
     def request_restart(self, reason):
-        """재시작 요청"""
+        """재시작 요청 (시간 기반 카운터 리셋 포함)"""
         current_time = datetime.now()
+        
+        # 진행 중인 재시작이 있으면 대기
+        if self.restart_in_progress:
+            logger.warning(f"{self.config['name']}: 이미 재시작 진행 중 - 요청 무시")
+            return
+            
+        # 1시간 후 카운터 리셋 (3600초)
+        if self.last_restart_time:
+            time_since_last = (current_time - self.last_restart_time).total_seconds()
+            if time_since_last > 3600:  # 1시간 = 3600초
+                logger.info(f"{self.config['name']}: 재시작 카운터 리셋 (마지막 재시작 후 {time_since_last/60:.1f}분 경과)")
+                self.restart_count = 0
         
         # 재시작 쿨다운 체크
         if self.last_restart_time:
@@ -581,34 +779,41 @@ class CameraRecorder:
                 
         # 최대 재시작 횟수 체크
         if self.restart_count >= self.max_restart_attempts:
-            logger.error(f"{self.config['name']}: 최대 재시작 횟수 초과 ({self.restart_count}/{self.max_restart_attempts})")
-            # 전체 프로세스 재시작 요청
+            logger.critical(f"{self.config['name']}: 최대 재시작 횟수 초과 ({self.restart_count}/{self.max_restart_attempts}) - 테스트 패턴으로 전환")
+            # 어떤 경우라도 영상은 계속 송출 - 테스트 패턴으로 전환
+            self.switch_to_test_pattern()
+            # 전체 프로세스 재시작도 요청 (백그라운드에서)
             if self.restart_callback:
-                self.restart_callback()
+                threading.Timer(10.0, self.restart_callback).start()  # 10초 후 프로세스 재시작 시도
             return
             
         logger.warning(f"{self.config['name']}: 재시작 요청 - {reason} (시도 {self.restart_count + 1}/{self.max_restart_attempts})")
+        
+        # 재시작 진행 플래그 설정
+        self.restart_in_progress = True
         
         # 재시작 카운트 증가
         self.restart_count += 1
         self.last_restart_time = current_time
         
         # 파이프라인 재시작
-        self.restart_pipeline()
+        success = self.restart_pipeline()
+        
+        # 성공 시 카운터 일부 감소 (완전 리셋 아님)
+        if success:
+            self.restart_count = max(0, self.restart_count - 1)
+            logger.info(f"{self.config['name']}: 재시작 성공 - 카운터 조정 ({self.restart_count}/{self.max_restart_attempts})")
+        
+        # 재시작 진행 플래그 해제
+        self.restart_in_progress = False
         
     def restart_pipeline(self):
         """파이프라인 재시작"""
         logger.info(f"{self.config['name']}: 파이프라인 재시작 시도")
         
         try:
-            # 기존 파이프라인 정지
-            if self.pipeline:
-                # splitmuxsink에 EOS 보내서 현재 파일 마무리
-                self.pipeline.send_event(Gst.Event.new_eos())
-                self.pipeline.get_state(2 * Gst.SECOND)  # EOS 대기
-                
-                self.pipeline.set_state(Gst.State.NULL)
-                time.sleep(2)
+            # 기존 파이프라인 안전하게 정리
+            self.cleanup_pipeline()
                 
             # 새 파이프라인 생성
             self.create_pipeline()
@@ -706,16 +911,20 @@ class CameraRecorder:
         return True
         
     def stop(self):
-        """녹화 중지"""
+        """녹화 중지 (graceful shutdown with deadlock prevention)"""
         logger.info(f"{self.config['name']} 녹화 중지")
         
-        # 워치독 스레드 중지
+        # 워치독 스레드 중지 (deadlock 방지)
         self.watchdog_running = False
-        if self.watchdog_thread:
-            self.watchdog_thread.join(timeout=5)
+        if self.watchdog_thread and self.watchdog_thread.is_alive():
+            logger.info(f"{self.config['name']}: 워치독 스레드 정지 대기...")
+            self.watchdog_thread.join(timeout=3)  # 3초 타임아웃
             
-        if self.pipeline:
-            self.pipeline.set_state(Gst.State.NULL)
+            if self.watchdog_thread.is_alive():
+                logger.warning(f"{self.config['name']}: 워치독 스레드가 정상 종료되지 않음 (강제 종료)")
+        
+        # 파이프라인 안전하게 정리
+        self.cleanup_pipeline()
 
 class CameraProcess:
     """카메라별 독립 프로세스"""

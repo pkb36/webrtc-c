@@ -6,6 +6,7 @@
 #include "circular_buffer.h"
 #include <pwd.h>
 #include <grp.h>
+#include "globals.h"
 
 // 전역 순환 버퍼 배열
 static H264CircularBuffer circular_buffers[NUM_CAMERAS] = {0};
@@ -450,8 +451,9 @@ void on_event_detected(int camera_id, int class_id, double event_time) {
     struct tm *local_time = localtime(&t);
     char date_folder[256];
     
+    WebRTCConfig* config = get_config();
     sprintf(date_folder, "%s/EVENT_%04d%02d%02d", 
-            g_config.record_path,  // 이 경로는 전달받아야 함
+            config->record_path,
             local_time->tm_year + 1900,
             local_time->tm_mon + 1,
             local_time->tm_mday);
@@ -464,7 +466,7 @@ void on_event_detected(int camera_id, int class_id, double event_time) {
     }
 
     sprintf(task->filename, "%s/EVENT_%04d%02d%02d/CAM%d_%02d%02d%02d.mp4",
-            g_config.record_path,
+            config->record_path,
             local_time->tm_year + 1900,
             local_time->tm_mon + 1,
             local_time->tm_mday,
@@ -474,7 +476,7 @@ void on_event_detected(int camera_id, int class_id, double event_time) {
             local_time->tm_sec);
 
     sprintf(task->http_path, "http://%s/data/EVENT_%04d%02d%02d/CAM%d_%02d%02d%02d.mp4",
-            g_config.http_service_ip,
+            config->http_service_ip,
             local_time->tm_year + 1900,
             local_time->tm_mon + 1,
             local_time->tm_mday,

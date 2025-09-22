@@ -32,6 +32,7 @@
 #include "ptz_control.h"
 #include "serial_comm.h"
 #include "thread_safe_queue.h"
+#include "globals.h"
 
 static int *g_cam_indices = NULL;
 #define MAX_OPT_FLOW_ITERATIONS 1000
@@ -120,7 +121,8 @@ void set_tracker_analysis(gboolean OnOff)
 {
 	char element_name[32];
 
-	for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
+	WebRTCConfig* config = get_config();
+	for (int cam_idx = 0; cam_idx < config->device_cnt; cam_idx++)
 	{
 		GstElement *dspostproc;
 		sprintf(element_name, "dspostproc_%d", cam_idx + 1);
@@ -199,7 +201,8 @@ void set_process_analysis(gboolean OnOff)
 
 	gboolean all_success = TRUE;
 
-	for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
+	WebRTCConfig* config = get_config();
+	for (int cam_idx = 0; cam_idx < config->device_cnt; cam_idx++)
 	{
 		char element_name[32];
 		GstElement *nvinfer;
@@ -2049,9 +2052,11 @@ static void on_event_save_complete(int camera_id, int event_id, const char *file
 		char event_class_id[2] = {0};
 		event_class_id[0] = event_id + '0';
 
-		strcpy(g_curlinfo.video_url, http_path);
+		CurlIinfoType* curlinfo = get_curl_info();
+		strcpy(curlinfo->video_url, http_path);
 
-		notification_request(g_config.camera_id, event_class_id, &g_curlinfo);
+		WebRTCConfig* config = get_config();
+		notification_request(config->camera_id, event_class_id, curlinfo);
 
 		// 파일 정보 확인
 		struct stat st;
@@ -2070,7 +2075,8 @@ static void on_event_save_complete(int camera_id, int event_id, const char *file
 
 void setup_nv_analysis()
 {
-	glog_trace("g_config.device_cnt=%d\n", g_config.device_cnt);
+	WebRTCConfig* config = get_config();
+	glog_trace("g_config.device_cnt=%d\n", config->device_cnt);
 
 	g_cow_tracking_state.is_tracking = FALSE;
 
@@ -2080,9 +2086,9 @@ void setup_nv_analysis()
 	queue_init(&g_event_queue);
 
 	// 각 카메라별로 동적 할당
-	g_cam_indices = g_malloc(sizeof(int) * g_config.device_cnt);
+	g_cam_indices = g_malloc(sizeof(int) * config->device_cnt);
 
-	for (int cam_idx = 0; cam_idx < g_config.device_cnt; cam_idx++)
+	for (int cam_idx = 0; cam_idx < config->device_cnt; cam_idx++)
 	{
 		GstPad *osd_sink_pad = NULL;
 		char element_name[32];

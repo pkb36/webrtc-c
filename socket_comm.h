@@ -26,15 +26,8 @@ typedef struct
 SOCKETINFO* init_socket_comm_server(int port);
 SOCKETINFO* init_socket_comm_client(int port);
 
-extern int move_ranch_pos(int index);
-extern void set_process_analysis(gboolean OnOff);
-extern void init_auto_pan();
-extern gboolean is_ptz_motion_stopped();
-extern int is_event_recording();
-
-extern CurlIinfoType g_curlinfo;
-extern DeviceSetting g_setting;
-extern WebRTCConfig g_config;
+// All extern declarations moved to globals.h
+// Include globals.h in your .c files instead
 
 int   send_data_socket_comm(SOCKETINFO* socket, const char* data, int len, int is_self);
 void  close_socket_comm(SOCKETINFO* socket);

@@ -107,8 +107,8 @@ gchar *build_snapshot_branch(const gchar *tee_name, gint width, gint height, con
 gchar *build_inference_branch(const gchar *tee_name, const gchar *mux_name,
 							  gint width, gint height, const gchar *config_file,
 							  const gchar *nvinfer_name, const gchar *postproc_name,
-							  const gchar *osd_name);
-gchar *build_encoder_branch(gint output_width, gint output_height,
+							  const gchar *osd_name, const gchar *output_tee_name);
+gchar *build_encoder_branch(const gchar *input_tee_name, gint output_width, gint output_height,
 							gint bitrate, const gchar *parse_name,
 							const gchar *tee_name);
 gchar *build_low_res_branch(const gchar *tee_name, gint framerate,
